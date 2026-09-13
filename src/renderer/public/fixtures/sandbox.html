@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><title>Computer-Use Sandbox — Fixture</title>
+<style>
+  body { margin: 0; background: #12161f; color: #e8ecf2; font: 14px system-ui, sans-serif; padding: 24px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 120px); gap: 12px; margin-bottom: 18px; }
+  button { height: 60px; font-size: 15px; border: 1px solid #3a4353; background: #1d2433; color: #fff; border-radius: 8px; }
+  #log { position: fixed; right: 14px; top: 14px; width: 250px; background: #0a0d14; border: 1px solid #333b4c; height: 90%; overflow: auto; font: 11px/1.5 ui-monospace, monospace; white-space: pre-wrap; }
+  fieldset { border: 1px solid #3a4353; border-radius: 8px; padding: 10px; }
+  input { background: #0f1520; color: #fff; border: 1px solid #3a4353; padding: 6px; width: 260px; }
+  .sendsend { background: #c2412e; color: #fff; }
+</style>
+</head>
+<body>
+<div class="grid" id="grid">
+  <button data-cell="1">1</button><button data-cell="2">2</button><button data-cell="3">3</button>
+  <button data-cell="4">4</button><button data-cell="5">5</button><button data-cell="6">6</button>
+  <button data-cell="7">7</button><button data-cell="8">8</button><button data-cell="9">9</button>
+</div>
+<fieldset>
+  <legend>Text field</legend>
+  <input id="text" placeholder="type here" />
+</fieldset>
+<div style="margin-top: 12px;">
+  <fieldset><legend>Scrollable</legend>
+    <div id="scroll" style="height: 90px; overflow-y: scroll; border: 1px solid #3a4353;">
+      <div style="height: 400px;">line 1<br>line 2<br>line 3<br>line 4<br>line 5<br>line 6</div>
+    </div>
+  </fieldset>
+</div>
+<button class="sendsend" id="send">SEND (requires approval)</button>
+<div id="log"></div>
+<script>
+  const log = document.getElementById("log");
+  const append = (s) => { log.textContent += s + "\n"; log.scrollTop = log.scrollHeight; };
+  document.querySelectorAll("#grid button").forEach((b) => b.addEventListener("click", () => append(`grid ${b.dataset.cell} clicked`)));
+  document.getElementById("send").addEventListener("click", () => append("SEND pressed — real send would be gated by the app's consequential confirmation"));
+  document.getElementById("text").addEventListener("input", (e) => append(`text now: "${e.target.value}"`));
+</script>
+</body>
+</html>

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Dasher gaze text entry</title>
+  <style>
+    html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#05070c;color:#fff;font-family:system-ui,sans-serif}
+    #canvas{display:block;width:100%;height:100%;background:#080b12}
+    #status{position:fixed;inset:16px auto auto 16px;padding:8px 12px;border-radius:999px;background:#161c2a;color:#aeb9d2;font-size:13px;pointer-events:none}
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="status">Loading Dasher…</div>
+  <script src="./dasher-wasm-wrapper.js"></script>
+  <script type="module">
+    const canvas = document.getElementById('canvas');
+    const status = document.getElementById('status');
+    const resize = () => {
+      canvas.width = Math.max(1, Math.round(canvas.clientWidth * devicePixelRatio));
+      canvas.height = Math.max(1, Math.round(canvas.clientHeight * devicePixelRatio));
+      dasher?.setScreenSize(canvas.width, canvas.height);
+    };
+    let dasher = null;
+    let running = false;
+    let output = '';
+    try {
+      const { default: createModule } = await import('./wasm/dasher.js');
+      dasher = new DasherWasm();
+      await dasher.init({
+        canvas,
+        moduleFactory: createModule,
+        onOutput: () => {
+          output = dasher.getOutputText();
+          parent.postMessage({ type: 'dasher-output', text: output }, '*');
+        },
+      });
+      dasher.createContext();
+      resize();
+      status.textContent = 'Ready — dwell START, then steer with your gaze';
+      parent.postMessage({ type: 'dasher-ready' }, '*');
+      addEventListener('resize', resize);
+      const frame = (time) => { dasher.frame(time); requestAnimationFrame(frame); };
+      requestAnimationFrame(frame);
+    } catch (error) {
+      status.textContent = `Dasher failed: ${error.message}`;
+      parent.postMessage({ type: 'dasher-error', text: error.message }, '*');
+    }
+
+    addEventListener('message', (event) => {
+      const msg = event.data;
+      if (!dasher || !msg || typeof msg !== 'object') return;
+      if (msg.type === 'gaze') {
+        dasher.mouseMove(msg.x * canvas.width, msg.y * canvas.height);
+      } else if (msg.type === 'start' && !running) {
+        running = true;
+        dasher.mouseDown();
+        status.textContent = 'Writing — dwell PAUSE to stop movement';
+      } else if (msg.type === 'pause' && running) {
+        running = false;
+        dasher.mouseUp();
+        status.textContent = 'Paused';
+      } else if (msg.type === 'clear') {
+        dasher.resetOutputText();
+        output = '';
+        parent.postMessage({ type: 'dasher-output', text: '' }, '*');
+      }
+    });
+  </script>
+</body>
+</html>

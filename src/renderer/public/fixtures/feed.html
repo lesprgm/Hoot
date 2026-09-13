@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><title>Feed — Fixture</title>
+<style>
+  body { margin: 0; background: #0c0e14; color: #fff; font: 14px system-ui, sans-serif; }
+  .card { height: 100vh; display: flex; align-items: center; padding: 0 26px; }
+  .b { font-size: 30px; margin-right: 22px; }
+  .t { font-size: 19px; line-height: 1.5; }
+  .id { position: fixed; top: 18px; right: 18px; font-size: 12px; color: #88f; }
+  button { position: fixed; bottom: 26px; right: 24px; }
+</style>
+</head>
+<body>
+<div class="card" id="card"><span class="b" id="b">🍜</span><span class="t" id="t">Card 1 — A storm over the lake at dusk.</span></div>
+<div class="id" id="id">Card 1</div>
+<script>
+  const cards = [
+    ["🍜", "Card 1 — A storm over the lake at dusk."],
+    ["🏔️", "Card 2 — New trail photos from the eastern ridge."],
+    ["🎧", "Card 3 — Minimalist playlist for deep focus."],
+    ["📖", "Card 4 — Reading list: agency and interfaces."],
+    ["☕", "Card 5 — Coffee brewing guide, slow method."],
+    ["🎨", "Card 6 — Sketchbook page: the quiet rail station."],
+    ["🌊", "Card 7 — Tide-watching from the north pier."],
+    ["🛰️", "Card 8 — Satellite timelapse of the season change."],
+  ];
+  let i = 0;
+  window.addEventListener("wheel", () => { i = (i + 1) % cards.length; update(); });
+  window.addEventListener("message", e => { if (e.data?.type === "navigation") { i = (i + (e.data.direction === "next" ? 1 : cards.length - 1)) % cards.length; update(); } });
+  document.addEventListener("keydown", (e) => { if (e.key === "j") { i = (i + 1) % cards.length; update(); } });
+  function update() {
+    document.getElementById("b").textContent = cards[i][0];
+    document.getElementById("t").textContent = cards[i][1];
+    document.getElementById("id").textContent = `Card ${i + 1}`;
+  }
+</script>
+</body>
+</html>

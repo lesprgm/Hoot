@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><title>Mail — Fixture</title>
+<style>
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #f7f8fa; color: #1c1c1e; }
+  .sidebar { width: 190px; float: left; height: 100vh; background: #eef1f5; padding-top: 40px; }
+  .sidebar div { padding: 10px 14px; color: #333; border-radius: 6px; margin: 4px; }
+  .sidebar div.on { background: #cdd8ff; font-weight: 700; }
+  .main { margin-left: 190px; padding: 30px 40px; }
+  .from { font-size: 17px; font-weight: 700; }
+  .subj { color: #555; font-size: 14px; margin: 6px 0 18px; }
+  .body p { margin: 12px 0; }
+  .reply { position: fixed; bottom: 22px; right: 26px; background: #355dfb; color: #fff; border: 0; border-radius: 10px; padding: 10px 22px; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="sidebar">
+  <div>Inbox</div>
+  <div class="on">Professor Lee</div>
+  <div>Tomorrow's planning</div>
+  <div>Daniel</div>
+  <div>Library notice</div>
+</div>
+<div class="main">
+  <div class="from">Professor Lee &lt;professor.lee@university.example&gt;</div>
+  <div class="subj">Subject: Tomorrow's lab meeting — schedule update</div>
+  <div class="body">
+    <p>Hi,</p>
+    <p>Could you confirm whether you will be attending the lab meeting tomorrow at 3 PM? I want to finalize the agenda before the end of the day.</p>
+    <p>Also, if you could bring your notes on the sensor data, that would be great.</p>
+    <p>— Professor Lee</p>
+  </div>
+  <textarea placeholder="Reply…" style="width: 90%; height: 120px; margin-top: 18px; border-radius: 8px; border: 1px solid #c9cdd6; padding: 10px;"></textarea>
+  <button class="reply">Reply</button>
+</div>
+</body>
+</html>
