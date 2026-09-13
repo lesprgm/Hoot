@@ -1,0 +1,448 @@
+From: View <dev@example.com>
+Subject: [PATCH 9/9] fix: fit stable screen calibration and persist complete state
+
+Fit an affine map on CPU from raw, distinct camera predictions without changing
+network weights afterward. Store the map in the same TF.js artifact as the
+model. Reject incomplete restored state, serialize worker commands, and scope
+camera teardown to its owning stream.
+
+diff --git a/src/BlazeGaze.ts b/src/BlazeGaze.ts
+index c84e607..a3f9250 100644
+--- a/src/BlazeGaze.ts
++++ b/src/BlazeGaze.ts
+@@ -1,4 +1,5 @@
+ import * as tf from '@tensorflow/tfjs';
++import { ScreenCalibration, readScreenCalibration } from './ScreenCalibration';
+ 
+ // References
+ // https://js.tensorflow.org/api/latest/#class:LayersModel
+@@ -30,16 +31,10 @@ export default class BlazeGaze {
+      */
+     async loadModel(modelUrl?: string, calibrationKey?: string): Promise<boolean> {
+         if (calibrationKey) {
+-            try {
+-                this.model = await tf.loadLayersModel(`indexeddb://${calibrationKey}`);
+-                console.log(`✅ BlazeGaze restored a calibrated model from indexeddb://${calibrationKey}`);
+-                this.model.getLayer('cnn_encoder').trainable = false;
+-                return true;
+-            } catch (error) {
+-                console.warn(
+-                    `No stored calibration at indexeddb://${calibrationKey}; falling back to the base model.`
+-                );
+-            }
++            this.model = await tf.loadLayersModel(`indexeddb://${calibrationKey}`);
++            this.getScreenCalibration();
++            this.model.getLayer('cnn_encoder').trainable = false;
++            return true;
+         }
+ 
+         // Resolve against the origin. This code runs inside a Web Worker built
+@@ -67,10 +62,18 @@ export default class BlazeGaze {
+      * Persist the current, already-adapted model so a later page load can
+      * restore it via `loadModel(modelUrl, calibrationKey)`.
+      */
+-    async saveCalibration(calibrationKey: string): Promise<void> {
++    getScreenCalibration(): ScreenCalibration {
++        const metadata = this.model?.getUserDefinedMetadata() as { screenCalibration?: unknown } | null;
++        return readScreenCalibration(metadata?.screenCalibration);
++    }
++
++    async saveCalibration(calibrationKey: string, calibration: ScreenCalibration): Promise<void> {
+         if (!this.model) {
+             throw new Error('Model not loaded. Call loadModel() first.');
+         }
++        // Model weights and the coordinate map are written as one TF.js model
++        // artifact. Restoring only the weights loses the user's calibration.
++        this.model.setUserDefinedMetadata({ screenCalibration: readScreenCalibration(calibration) });
+         await this.model.save(`indexeddb://${calibrationKey}`);
+     }
+ 
+diff --git a/src/ScreenCalibration.ts b/src/ScreenCalibration.ts
+new file mode 100644
+index 0000000..5010172
+--- /dev/null
++++ b/src/ScreenCalibration.ts
+@@ -0,0 +1,59 @@
++import { Matrix, SingularValueDecomposition } from 'ml-matrix';
++
++export interface CalibrationPoint {
++  samples: number[][];
++  target: number[];
++}
++
++export interface ScreenCalibration {
++  version: 3;
++  matrix: number[][];
++  fitRmse: number;
++}
++
++function median(values: number[]): number {
++  const sorted = values.slice().sort((a, b) => a - b);
++  const middle = Math.floor(sorted.length / 2);
++  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
++}
++
++export function mapScreenPoint(calibration: ScreenCalibration, point: number[]): number[] {
++  return calibration.matrix.map(row => row[0] * point[0] + row[1] * point[1] + row[2]);
++}
++
++/** Fit one equal-weight observation per target to the unchanged network output.
++ * Normalising the predictors avoids poorly scaled camera output destabilising
++ * the least-squares solve. No held-out validation data enters this function. */
++export function fitScreenCalibration(points: CalibrationPoint[]): ScreenCalibration {
++  if (points.length !== 5) throw new Error('Screen calibration requires five collected targets.');
++  const finitePoint = (point: number[]) => point.length === 2 && point.every(Number.isFinite);
++  if (points.some(point => !finitePoint(point.target) || point.samples.length !== 3 || !point.samples.every(finitePoint))) {
++    throw new Error('Each calibration target requires three finite camera predictions.');
++  }
++  const source = points.map(point => [0, 1].map(axis => median(point.samples.map(sample => sample[axis]))));
++  const mean = [0, 1].map(axis => source.reduce((sum, point) => sum + point[axis], 0) / source.length);
++  const scale = [0, 1].map(axis => Math.sqrt(source.reduce((sum, point) => sum + (point[axis] - mean[axis]) ** 2, 0) / source.length));
++  if (scale.some(value => value < 1e-6)) throw new Error('Camera predictions do not vary across calibration targets.');
++  const design = new Matrix(source.map(point => [(point[0] - mean[0]) / scale[0], (point[1] - mean[1]) / scale[1], 1]));
++  const svd = new SingularValueDecomposition(design, { autoTranspose: true });
++  if (svd.rank < 3 || svd.condition > 1e4) throw new Error('Camera predictions cannot distinguish horizontal and vertical targets.');
++  const coefficients = svd.solve(new Matrix(points.map(point => point.target))).transpose().to2DArray();
++  const matrix = coefficients.map(row => [row[0] / scale[0], row[1] / scale[1], row[2] - row[0] * mean[0] / scale[0] - row[1] * mean[1] / scale[1]]);
++  const calibration: ScreenCalibration = { version: 3, matrix, fitRmse: 0 };
++  calibration.fitRmse = Math.sqrt(source.reduce((sum, point, index) => {
++    const mapped = mapScreenPoint(calibration, point);
++    return sum + (mapped[0] - points[index].target[0]) ** 2 + (mapped[1] - points[index].target[1]) ** 2;
++  }, 0) / source.length);
++  return readScreenCalibration(calibration);
++}
++
++/** Refuse incomplete/legacy saved state instead of accepting a base model. */
++export function readScreenCalibration(value: unknown): ScreenCalibration {
++  const saved = value as ScreenCalibration | null;
++  if (!saved || saved.version !== 3 || !Array.isArray(saved.matrix) || saved.matrix.length !== 2
++    || saved.matrix.some(row => !Array.isArray(row) || row.length !== 3 || !row.every(Number.isFinite))
++    || !Number.isFinite(saved.fitRmse) || saved.fitRmse < 0) {
++    throw new Error('Saved calibration is incomplete or incompatible. Recalibrate explicitly.');
++  }
++  return { version: 3, matrix: saved.matrix.map(row => row.slice()), fitRmse: saved.fitRmse };
++}
+diff --git a/src/WebEyeTrack.ts b/src/WebEyeTrack.ts
+index 881771c..6e1b444 100644
+--- a/src/WebEyeTrack.ts
++++ b/src/WebEyeTrack.ts
+@@ -19,6 +19,7 @@ import {
+   applyAffineMatrix
+ } from "./utils/mathUtils";
+ import { KalmanFilter2D } from "./utils/filter";
++import { CalibrationPoint, ScreenCalibration, fitScreenCalibration, mapScreenPoint } from './ScreenCalibration';
+ 
+ // Reference
+ // https://mediapipe-studio.webapps.google.com/demo/face_landmarker
+@@ -62,8 +63,10 @@ export default class WebEyeTrack {
+   private intrinsicsMatrix: Matrix = new Matrix(3, 3);
+   private affineMatrix: tf.Tensor | null = null;
+   private kalmanFilter: KalmanFilter2D;
+-  private recentCalibrationFrames: GazeResult[] = [];
+-  private pendingCalibrationBatch: Array<{ frames: GazeResult[], x: number, y: number }> = [];
++  private recentCalibrationFrames: Array<{ timestamp: number, point: number[] }> = [];
++  private pendingCalibrationBatch: CalibrationPoint[] = [];
++  private collectingCalibration = false;
++  private screenCalibration: ScreenCalibration | null = null;
+ 
+   // Public variables
+   public loaded: boolean = false;
+@@ -108,6 +111,7 @@ export default class WebEyeTrack {
+   ): Promise<boolean> {
+     await this.faceLandmarkerClient.initialize(faceLandmarkerAssets);
+     const calibrationRestored = await this.blazeGaze.loadModel(modelUrl, calibrationKey);
++    this.screenCalibration = calibrationRestored ? this.blazeGaze.getScreenCalibration() : null;
+     this.loaded = true;
+     return calibrationRestored;
+   }
+@@ -117,7 +121,8 @@ export default class WebEyeTrack {
+    * passing the same `calibrationKey` to `initialize()`.
+    */
+   async saveCalibration(calibrationKey: string): Promise<void> {
+-    await this.blazeGaze.saveCalibration(calibrationKey);
++    if (!this.screenCalibration) throw new Error('No complete screen calibration to save.');
++    await this.blazeGaze.saveCalibration(calibrationKey, this.screenCalibration);
+   }
+ 
+   pruneCalibData() {
+@@ -186,12 +191,19 @@ export default class WebEyeTrack {
+   calibrate(x: number, y: number): boolean {
+     this.latestMouseClick = { x, y, timestamp: Date.now() };
+ 
+-    const frames = this.recentCalibrationFrames.slice(-3);
+-    if (!this.loaded || frames.length < 3) {
++    const frames = this.recentCalibrationFrames;
++    if (!this.loaded || !this.collectingCalibration || frames.length < 3) {
+       return false;
+     }
+ 
+-    this.pendingCalibrationBatch.push({ frames, x, y });
++    // Select distinct frames across the fixation interval, not three adjacent
++    // render ticks that may contain the same camera image.
++    const selected = [frames[0], frames[Math.floor(frames.length / 2)], frames[frames.length - 1]];
++    const point = { samples: selected.map(frame => frame.point.slice()), target: [x, y] };
++    const previous = this.pendingCalibrationBatch.findIndex(entry => entry.target[0] === x && entry.target[1] === y);
++    if (previous >= 0) this.pendingCalibrationBatch[previous] = point;
++    else this.pendingCalibrationBatch.push(point);
++    this.collectingCalibration = false;
+     this.recentCalibrationFrames = [];
+     return true;
+   }
+@@ -201,19 +213,11 @@ export default class WebEyeTrack {
+       return false;
+     }
+ 
+-    const eyePatches: ImageData[] = [];
+-    const headVectors: number[][] = [];
+-    const faceOrigins3D: number[][] = [];
+-    const normPogs: number[][] = [];
+-    for (const point of this.pendingCalibrationBatch) {
+-      for (const frame of point.frames) {
+-        eyePatches.push(frame.eyePatch as ImageData);
+-        headVectors.push(frame.headVector as number[]);
+-        faceOrigins3D.push(frame.faceOrigin3D as number[]);
+-        normPogs.push([point.x, point.y]);
+-      }
+-    }
+-    this.adapt(eyePatches, headVectors, faceOrigins3D, normPogs);
++    // Keep the network fixed. Fitting an affine map and THEN changing network
++    // weights invalidates that map; it was the cause of prediction drift.
++    this.screenCalibration = fitScreenCalibration(this.pendingCalibrationBatch);
++    this.affineMatrix?.dispose();
++    this.affineMatrix = null;
+     this.pendingCalibrationBatch = [];
+     this.kalmanFilter = new KalmanFilter2D();
+     return true;
+@@ -221,8 +225,11 @@ export default class WebEyeTrack {
+ 
+   beginCalibrationPoint(): void {
+     this.recentCalibrationFrames = [];
++    this.collectingCalibration = true;
+   }
+ 
++  calibrationFitRmse(): number | null { return this.screenCalibration?.fitRmse ?? null; }
++
+   computeFaceOrigin3D(frame: ImageData, normFaceLandmarks: Point[], faceLandmarks: Point[], faceRT: Matrix): number[] {
+ 
+     // Estimate the face width in centimeters if not set
+@@ -483,7 +490,14 @@ export default class WebEyeTrack {
+     tf.dispose(predNormPog);
+ 
+     // Apply Kalman filter to smooth the gaze point
+-    const kalmanOutput = this.kalmanFilter.step(normPog[0]);
++    const rawPoint = normPog[0];
++    if (!rawPoint.every(Number.isFinite)) throw new Error('Gaze model produced non-finite coordinates.');
++    if (this.collectingCalibration && this.recentCalibrationFrames.every(frame => frame.timestamp !== timestamp)) {
++      this.recentCalibrationFrames.push({ timestamp, point: rawPoint.slice() });
++      if (this.recentCalibrationFrames.length > 15) this.recentCalibrationFrames.shift();
++    }
++    const calibratedPoint = this.screenCalibration ? mapScreenPoint(this.screenCalibration, rawPoint) : rawPoint;
++    const kalmanOutput = this.kalmanFilter.step(calibratedPoint);
+     const tic5 = performance.now();
+ 
+     // Clip the output to the range of [-0.5, 0.5]
+@@ -519,10 +533,6 @@ export default class WebEyeTrack {
+ 
+     // Update the latest gaze result
+     this.latestGazeResult = gaze_result;
+-    this.recentCalibrationFrames.push(gaze_result);
+-    if (this.recentCalibrationFrames.length > 8) {
+-      this.recentCalibrationFrames.shift();
+-    }
+     return gaze_result;
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/src/WebEyeTrackProxy.ts b/src/WebEyeTrackProxy.ts
+index 71b5f07..5c8db1c 100644
+--- a/src/WebEyeTrackProxy.ts
++++ b/src/WebEyeTrackProxy.ts
+@@ -45,6 +45,7 @@ export interface WebEyeTrackProxyOptions {
+ export default class WebEyeTrackProxy {
+   private worker: Worker;
+   private clickListener: ((e: MouseEvent) => void) | null = null;
++  private lastSentTimestamp: number | null = null;
+ 
+   public status: 'idle' | 'inference' | 'calib' = 'idle';
+ 
+@@ -63,13 +64,15 @@ export default class WebEyeTrackProxy {
+           // Start the webcam client and set up the frame callback
+           webcamClient.startWebcam(async (frame: ImageData, timestamp: number) => {
+             // Send the frame to the worker for processing
+-            if (this.status === 'idle') {
++            if (this.status === 'idle' && timestamp !== this.lastSentTimestamp) {
++              this.status = 'inference';
++              this.lastSentTimestamp = timestamp;
+               this.worker.postMessage({
+                 type: 'step',
+                 payload: { frame, timestamp }
+               })
+             }
+-          });
++          }).catch(error => this.onError('camera', String(error.message ?? error)));
+ 
+           this.onReady(mess.data.calibrationRestored === true);
+           break;
+@@ -89,7 +92,7 @@ export default class WebEyeTrackProxy {
+           break;
+ 
+         case 'calibrationApplied':
+-          this.onCalibrationApplied(mess.data.adapted);
++          this.onCalibrationApplied(mess.data.adapted, mess.data.fitRmse);
+           break;
+ 
+         case 'calibrationPointBegun':
+@@ -109,6 +112,8 @@ export default class WebEyeTrackProxy {
+           break;
+       }
+     }
++    this.worker.onerror = (event) => this.onError('worker', event.message);
++    this.worker.onmessageerror = () => this.onError('worker', 'The worker response could not be decoded.');
+ 
+     // Initialize the worker
+     this.worker.postMessage({
+@@ -199,7 +204,7 @@ export default class WebEyeTrackProxy {
+   /** Fired for each calibrate() call. `adapted` is false when no face was seen. */
+   onCalibrationPoint: (adapted: boolean, normX: number, normY: number) => void = () => {};
+ 
+-  onCalibrationApplied: (adapted: boolean) => void = () => {};
++  onCalibrationApplied: (adapted: boolean, fitRmse: number | null) => void = () => {};
+ 
+   /** Fired after the worker has discarded frames from the previous target. */
+   onCalibrationPointBegun: () => void = () => {};
+diff --git a/src/WebEyeTrackWorker.ts b/src/WebEyeTrackWorker.ts
+index 2362672..938b6c2 100644
+--- a/src/WebEyeTrackWorker.ts
++++ b/src/WebEyeTrackWorker.ts
+@@ -14,7 +14,18 @@ function reportError(phase: string, error: any) {
+   });
+ }
+ 
+-self.onmessage = async (e) => {
++// A reset/collection request must not overtake an awaited inference. The proxy
++// sends at most one camera frame at a time, so this queue stays bounded.
++let commands: Promise<void> = Promise.resolve();
++self.onmessage = (e) => {
++  commands = commands.then(() => handleMessage(e)).catch(error => {
++    reportError(e.data.type, error);
++    status = 'idle';
++    self.postMessage({ type: 'statusUpdate', status });
++  });
++};
++
++async function handleMessage(e: MessageEvent): Promise<void> {
+   const { type, payload } = e.data;
+ 
+   switch (type) {
+@@ -40,6 +51,10 @@ self.onmessage = async (e) => {
+     }
+ 
+     case 'step':
++      if (payload.timestamp === lastTimestamp) {
++        self.postMessage({ type: 'statusUpdate', status: 'idle' });
++        break;
++      }
+       if (status === 'idle') {
+ 
+         status = 'inference';
+@@ -87,7 +102,7 @@ self.onmessage = async (e) => {
+ 
+       try {
+         const adapted = tracker.applyCalibration();
+-        self.postMessage({ type: 'calibrationApplied', adapted });
++        self.postMessage({ type: 'calibrationApplied', adapted, fitRmse: tracker.calibrationFitRmse() });
+       } catch (error) {
+         reportError('applyCalibration', error);
+       }
+@@ -116,6 +131,6 @@ self.onmessage = async (e) => {
+       console.warn(`[WebEyeTrackWorker] Unknown message type: ${type}`);
+       break;
+   }
+-};
++}
+ 
+ export {}; // for TS module mode
+diff --git a/src/WebcamClient.ts b/src/WebcamClient.ts
+index 7745e97..7dc7f5a 100644
+--- a/src/WebcamClient.ts
++++ b/src/WebcamClient.ts
+@@ -3,6 +3,9 @@ export default class WebcamClient {
+     private videoElement: HTMLVideoElement;
+     private stream?: MediaStream;
+     private frameCallback?: (frame: ImageData, timestamp: number) => Promise<void>;
++    private stopped = false;
++    private animationFrame: number | null = null;
++    private loadedDataListener = () => this._processFrames();
+ 
+     constructor(videoElementId: string) {
+         const videoElement = document.getElementById(videoElementId) as HTMLVideoElement;
+@@ -26,7 +29,12 @@ export default class WebcamClient {
+             };
+ 
+             // Request webcam access
+-            this.stream = await navigator.mediaDevices.getUserMedia(constraints);
++            const stream = await navigator.mediaDevices.getUserMedia(constraints);
++            if (this.stopped) {
++                stream.getTracks().forEach(track => track.stop());
++                throw new Error('Camera startup was cancelled.');
++            }
++            this.stream = stream;
+             this.videoElement.srcObject = this.stream;
+ 
+             // Set the callback if provided
+@@ -39,25 +47,35 @@ export default class WebcamClient {
+                 this.videoElement.play();
+             };
+ 
+-            this.videoElement.addEventListener('loadeddata', () => {
+-                this._processFrames();
+-            });
++            this.videoElement.addEventListener('loadeddata', this.loadedDataListener, { once: true });
+ 
+         } catch (error) {
+-            console.error("Error accessing the webcam:", error);
++            throw error;
+         }
+     }
+ 
+     stopWebcam(): void {
++        this.stopped = true;
++        if (this.animationFrame !== null) cancelAnimationFrame(this.animationFrame);
++        this.videoElement.removeEventListener('loadeddata', this.loadedDataListener);
+         if (this.stream) {
+             this.stream.getTracks().forEach(track => track.stop());
++            if (this.videoElement.srcObject === this.stream) {
++                this.videoElement.pause();
++                this.videoElement.srcObject = null;
++                this.videoElement.onloadedmetadata = null;
++            }
+             this.stream = undefined;
+         }
+     }
+ 
++    getVideoSettings(): MediaTrackSettings | null {
++        return this.stream?.getVideoTracks()[0]?.getSettings() ?? null;
++    }
++
+     private _processFrames(): void {
+         const process = async () => {
+-            if (!this.videoElement || this.videoElement.paused || this.videoElement.ended) return;
++            if (this.stopped || !this.videoElement || this.videoElement.paused || this.videoElement.ended) return;
+ 
+             // Convert the current video frame to ImageData
+             const imageData = convertVideoFrameToImageData(this.videoElement);
+@@ -68,9 +86,9 @@ export default class WebcamClient {
+             }
+ 
+             // Request the next frame
+-            requestAnimationFrame(process);
++            this.animationFrame = requestAnimationFrame(process);
+         };
+ 
+-        requestAnimationFrame(process);
++        this.animationFrame = requestAnimationFrame(process);
+     }
+-}
+\ No newline at end of file
++}

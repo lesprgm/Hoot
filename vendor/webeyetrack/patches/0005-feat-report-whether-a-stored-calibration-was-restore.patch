@@ -1,0 +1,128 @@
+From 6bd6bb78748b7e5d335d58b0bee3f5be9f862619 Mon Sep 17 00:00:00 2001
+From: mpl_risk <dev@example.com>
+Date: Thu, 9 Jul 2026 14:38:26 -1000
+Subject: [PATCH 5/5] feat: report whether a stored calibration was restored
+
+loadModel() silently fell back to the base model when no calibration was found
+under the given key. An application then measures gaze with a model the user
+never calibrated, and has no way to know. initialize() now returns that fact and
+the worker's 'ready' message carries it, so it can be recorded alongside the data
+instead of discovered during analysis.
+---
+ src/BlazeGaze.ts         |  9 +++++++--
+ src/WebEyeTrack.ts       |  6 ++++--
+ src/WebEyeTrackProxy.ts  | 13 ++++++++++---
+ src/WebEyeTrackWorker.ts |  5 +++--
+ 4 files changed, 24 insertions(+), 9 deletions(-)
+
+diff --git a/src/BlazeGaze.ts b/src/BlazeGaze.ts
+index e946850..c84e607 100644
+--- a/src/BlazeGaze.ts
++++ b/src/BlazeGaze.ts
+@@ -23,14 +23,18 @@ export default class BlazeGaze {
+      *   instead of the base model. `adapt()` personalises the weights in place,
+      *   so this is what lets a calibration performed on one page apply to a
+      *   later page load — each page otherwise starts from the base model.
++     *
++     * @returns true if a stored calibration was restored, false if the base
++     *   model was loaded. A caller that silently accepted the base model would
++     *   be measuring gaze from a model the user never calibrated.
+      */
+-    async loadModel(modelUrl?: string, calibrationKey?: string): Promise<void> {
++    async loadModel(modelUrl?: string, calibrationKey?: string): Promise<boolean> {
+         if (calibrationKey) {
+             try {
+                 this.model = await tf.loadLayersModel(`indexeddb://${calibrationKey}`);
+                 console.log(`✅ BlazeGaze restored a calibrated model from indexeddb://${calibrationKey}`);
+                 this.model.getLayer('cnn_encoder').trainable = false;
+-                return;
++                return true;
+             } catch (error) {
+                 console.warn(
+                     `No stored calibration at indexeddb://${calibrationKey}; falling back to the base model.`
+@@ -56,6 +60,7 @@ export default class BlazeGaze {
+ 
+         // Freeze the ``cnn_model`` layers but keep the gaze_MLP trainable
+         this.model.getLayer('cnn_encoder').trainable = false;
++        return false;
+     }
+ 
+     /**
+diff --git a/src/WebEyeTrack.ts b/src/WebEyeTrack.ts
+index 0d99d14..dd73a09 100644
+--- a/src/WebEyeTrack.ts
++++ b/src/WebEyeTrack.ts
+@@ -98,14 +98,16 @@ export default class WebEyeTrack {
+     this.clickTTL = clickTTL;
+   }
+ 
++  /** @returns true if a stored calibration was restored for this session. */
+   async initialize(
+     modelUrl?: string,
+     calibrationKey?: string,
+     faceLandmarkerAssets?: FaceLandmarkerAssets,
+-  ): Promise<void> {
++  ): Promise<boolean> {
+     await this.faceLandmarkerClient.initialize(faceLandmarkerAssets);
+-    await this.blazeGaze.loadModel(modelUrl, calibrationKey);
++    const calibrationRestored = await this.blazeGaze.loadModel(modelUrl, calibrationKey);
+     this.loaded = true;
++    return calibrationRestored;
+   }
+ 
+   /**
+diff --git a/src/WebEyeTrackProxy.ts b/src/WebEyeTrackProxy.ts
+index c44e5f7..15e5fa8 100644
+--- a/src/WebEyeTrackProxy.ts
++++ b/src/WebEyeTrackProxy.ts
+@@ -71,7 +71,7 @@ export default class WebEyeTrackProxy {
+             }
+           });
+ 
+-          this.onReady();
++          this.onReady(mess.data.calibrationRestored === true);
+           break;
+ 
+         case 'stepResult':
+@@ -169,8 +169,15 @@ export default class WebEyeTrackProxy {
+     console.warn('onGazeResults callback not set');
+   }
+ 
+-  /** Fired once the model has loaded and frames are being processed. */
+-  onReady: () => void = () => {};
++  /**
++   * Fired once the model has loaded and frames are being processed.
++   *
++   * @param calibrationRestored whether a model stored under `calibrationKey`
++   *   was found. False means gaze is being measured with the base model, which
++   *   the user never calibrated -- worth recording alongside the data rather
++   *   than discovering during analysis.
++   */
++  onReady: (calibrationRestored: boolean) => void = () => {};
+ 
+   /** Fired for each calibrate() call. `adapted` is false when no face was seen. */
+   onCalibrationPoint: (adapted: boolean, normX: number, normY: number) => void = () => {};
+diff --git a/src/WebEyeTrackWorker.ts b/src/WebEyeTrackWorker.ts
+index d4ed4b5..0ba0785 100644
+--- a/src/WebEyeTrackWorker.ts
++++ b/src/WebEyeTrackWorker.ts
+@@ -21,8 +21,9 @@ self.onmessage = async (e) => {
+     case 'init': {
+       const options = payload ?? {};
+       tracker = new WebEyeTrack(options.maxPoints, options.clickTTL);
++      let calibrationRestored = false;
+       try {
+-        await tracker.initialize(options.modelUrl, options.calibrationKey, {
++        calibrationRestored = await tracker.initialize(options.modelUrl, options.calibrationKey, {
+           wasmPath: options.wasmPath,
+           modelAssetPath: options.faceModelUrl,
+         });
+@@ -33,7 +34,7 @@ self.onmessage = async (e) => {
+         reportError('init', error);
+         return;
+       }
+-      self.postMessage({ type: 'ready' });
++      self.postMessage({ type: 'ready', calibrationRestored });
+       status = 'idle';
+       break;
+     }

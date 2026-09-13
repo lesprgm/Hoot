@@ -1,0 +1,257 @@
+From 23706a049e9930115f91b9387bb680243307e51d Mon Sep 17 00:00:00 2001
+From: mpl_risk <dev@example.com>
+Date: Wed, 8 Jul 2026 22:17:02 -1000
+Subject: [PATCH 2/5] feat: configurable model URL and IndexedDB calibration
+ persistence
+
+Two changes, both backwards compatible.
+
+1. BlazeGaze.loadModel() takes an optional modelUrl. It previously hardcoded
+   ${self.location.origin}/web/model.json, which forces any host application
+   that serves static files under a different prefix to proxy that one path.
+
+2. adapt() personalises the model weights in place, and those weights live in
+   the Web Worker. Because a full page navigation destroys the worker, a
+   calibration performed on one page cannot affect the next. Add
+   saveCalibration(key) / loadModel(url, key), which persist and restore the
+   personalised model via tf.js's indexeddb:// IO handler. IndexedDB is
+   available in a WorkerGlobalScope, and tf.js registers the handler there
+   (IS_BROWSER is true when WorkerGlobalScope is defined).
+
+Without a calibrationKey the behaviour is exactly as before.
+---
+ src/BlazeGaze.ts         | 48 +++++++++++++++++++++++++++++++++++++---
+ src/WebEyeTrack.ts       | 12 ++++++++--
+ src/WebEyeTrackProxy.ts  | 46 +++++++++++++++++++++++++++++++++++---
+ src/WebEyeTrackWorker.ts | 17 +++++++++-----
+ 4 files changed, 110 insertions(+), 13 deletions(-)
+
+diff --git a/src/BlazeGaze.ts b/src/BlazeGaze.ts
+index c4e44d8..e946850 100644
+--- a/src/BlazeGaze.ts
++++ b/src/BlazeGaze.ts
+@@ -11,8 +11,39 @@ export default class BlazeGaze {
+         // Optionally trigger model load in constructor
+     }
+ 
+-    async loadModel(): Promise<void> {
+-        const path = `${self.location.origin}/web/model.json`;
++    /**
++     * Load the gaze model.
++     *
++     * @param modelUrl Where to fetch the base model from. Defaults to
++     *   `${self.location.origin}/web/model.json`, as before. Host applications
++     *   that serve their static files from another prefix can override it
++     *   rather than proxying that one path.
++     * @param calibrationKey When set, a model previously stored by
++     *   `saveCalibration()` under `indexeddb://<calibrationKey>` is restored
++     *   instead of the base model. `adapt()` personalises the weights in place,
++     *   so this is what lets a calibration performed on one page apply to a
++     *   later page load — each page otherwise starts from the base model.
++     */
++    async loadModel(modelUrl?: string, calibrationKey?: string): Promise<void> {
++        if (calibrationKey) {
++            try {
++                this.model = await tf.loadLayersModel(`indexeddb://${calibrationKey}`);
++                console.log(`✅ BlazeGaze restored a calibrated model from indexeddb://${calibrationKey}`);
++                this.model.getLayer('cnn_encoder').trainable = false;
++                return;
++            } catch (error) {
++                console.warn(
++                    `No stored calibration at indexeddb://${calibrationKey}; falling back to the base model.`
++                );
++            }
++        }
++
++        // Resolve against the origin. This code runs inside a Web Worker built
++        // from a blob: URL, which has no usable base URL, so a root-relative
++        // path such as "/static/web/model.json" cannot be fetched as given.
++        const path = modelUrl
++            ? new URL(modelUrl, self.location.origin).toString()
++            : `${self.location.origin}/web/model.json`;
+         try {
+             // Load model from local directory (adjust path if needed)
+             this.model = await tf.loadLayersModel(path);
+@@ -22,11 +53,22 @@ export default class BlazeGaze {
+             console.error(error);
+             throw error;
+         }
+-        
++
+         // Freeze the ``cnn_model`` layers but keep the gaze_MLP trainable
+         this.model.getLayer('cnn_encoder').trainable = false;
+     }
+ 
++    /**
++     * Persist the current, already-adapted model so a later page load can
++     * restore it via `loadModel(modelUrl, calibrationKey)`.
++     */
++    async saveCalibration(calibrationKey: string): Promise<void> {
++        if (!this.model) {
++            throw new Error('Model not loaded. Call loadModel() first.');
++        }
++        await this.model.save(`indexeddb://${calibrationKey}`);
++    }
++
+     predict(image: tf.Tensor, head_vector: tf.Tensor, face_origin_3d: tf.Tensor): tf.Tensor {
+         if (!this.model) {
+             throw new Error('Model not loaded. Call loadModel() first.');
+diff --git a/src/WebEyeTrack.ts b/src/WebEyeTrack.ts
+index 32a8ffd..6831eb0 100644
+--- a/src/WebEyeTrack.ts
++++ b/src/WebEyeTrack.ts
+@@ -98,12 +98,20 @@ export default class WebEyeTrack {
+     this.clickTTL = clickTTL;
+   }
+ 
+-  async initialize(): Promise<void> {
++  async initialize(modelUrl?: string, calibrationKey?: string): Promise<void> {
+     await this.faceLandmarkerClient.initialize();
+-    await this.blazeGaze.loadModel();
++    await this.blazeGaze.loadModel(modelUrl, calibrationKey);
+     this.loaded = true;
+   }
+ 
++  /**
++   * Persist the personalised model so a later page load can restore it by
++   * passing the same `calibrationKey` to `initialize()`.
++   */
++  async saveCalibration(calibrationKey: string): Promise<void> {
++    await this.blazeGaze.saveCalibration(calibrationKey);
++  }
++
+   pruneCalibData() {
+     
+     // Prune the calibration data to keep only the last maxPoints points
+diff --git a/src/WebEyeTrackProxy.ts b/src/WebEyeTrackProxy.ts
+index 2326e79..a08ef60 100644
+--- a/src/WebEyeTrackProxy.ts
++++ b/src/WebEyeTrackProxy.ts
+@@ -3,12 +3,28 @@ import { GazeResult } from "./types";
+ 
+ // @ts-ignore
+ import WebEyeTrackWorker from "worker-loader?inline=no-fallback!./WebEyeTrackWorker.ts";
++
++export interface WebEyeTrackProxyOptions {
++  /** Override where the base gaze model is fetched from. */
++  modelUrl?: string;
++  /**
++   * Restore, and later persist, a personalised model under this key. Model
++   * adaptation happens in the worker and dies with it, so without a key a
++   * calibration cannot outlive the page it was performed on.
++   */
++  calibrationKey?: string;
++  /** Size of the calibration support set. Defaults to 5. */
++  maxPoints?: number;
++  /** Seconds before click-derived calibration points expire. Defaults to 60. */
++  clickTTL?: number;
++}
++
+ export default class WebEyeTrackProxy {
+   private worker: Worker;
+ 
+   public status: 'idle' | 'inference' | 'calib' = 'idle';
+ 
+-  constructor(webcamClient: WebcamClient) {
++  constructor(webcamClient: WebcamClient, options: WebEyeTrackProxyOptions = {}) {
+ 
+     // Initialize the WebEyeTrackWorker
+     this.worker = new WebEyeTrackWorker();
+@@ -45,6 +61,10 @@ export default class WebEyeTrackProxy {
+           this.status = mess.data.status;
+           break;
+ 
++        case 'calibrationSaved':
++          this.onCalibrationSaved(mess.data.calibrationKey);
++          break;
++
+         default:
+           console.warn(`[WebEyeTrackProxy] Unknown message type: ${mess.data.type}`);
+           break;
+@@ -52,7 +72,15 @@ export default class WebEyeTrackProxy {
+     }
+ 
+     // Initialize the worker
+-    this.worker.postMessage({ type: 'init' });
++    this.worker.postMessage({
++      type: 'init',
++      payload: {
++        modelUrl: options.modelUrl,
++        calibrationKey: options.calibrationKey,
++        maxPoints: options.maxPoints,
++        clickTTL: options.clickTTL,
++      },
++    });
+ 
+     // Add mouse handler for re-calibration
+     window.addEventListener('click', (e: MouseEvent) => {
+@@ -64,8 +92,20 @@ export default class WebEyeTrackProxy {
+     })
+   }
+ 
++  /**
++   * Persist the current, personalised model. Resolve by listening on
++   * `onCalibrationSaved`. Pass the same key to a later `WebEyeTrackProxy` to
++   * restore the calibration.
++   */
++  saveCalibration(calibrationKey: string) {
++    this.worker.postMessage({ type: 'saveCalibration', payload: { calibrationKey } });
++  }
++
+   // Callback for gaze results
+-  onGazeResults: (gazeResult: GazeResult) => void = () => { 
++  onGazeResults: (gazeResult: GazeResult) => void = () => {
+     console.warn('onGazeResults callback not set');
+   }
++
++  // Fired once the personalised model has been written to storage.
++  onCalibrationSaved: (calibrationKey: string) => void = () => {};
+ }
+diff --git a/src/WebEyeTrackWorker.ts b/src/WebEyeTrackWorker.ts
+index be4addc..1296c38 100644
+--- a/src/WebEyeTrackWorker.ts
++++ b/src/WebEyeTrackWorker.ts
+@@ -10,12 +10,14 @@ self.onmessage = async (e) => {
+   const { type, payload } = e.data;
+ 
+   switch (type) {
+-    case 'init':
+-      tracker = new WebEyeTrack();
+-      await tracker.initialize();
++    case 'init': {
++      const options = payload ?? {};
++      tracker = new WebEyeTrack(options.maxPoints, options.clickTTL);
++      await tracker.initialize(options.modelUrl, options.calibrationKey);
+       self.postMessage({ type: 'ready' });
+       status = 'idle';
+       break;
++    }
+ 
+     case 'step':
+       if (status === 'idle') {
+@@ -31,18 +33,23 @@ self.onmessage = async (e) => {
+         self.postMessage({ type: 'statusUpdate', status: status});
+       }
+       break;
+-    
++
+     case 'click':
+       // Handle click event for re-calibration
+       status = 'calib';
+       self.postMessage({ type: 'statusUpdate', status: status});
+ 
+       tracker.handleClick(payload.x, payload.y);
+-      
++
+       status = 'idle';
+       self.postMessage({ type: 'statusUpdate', status: status});
+       break;
+ 
++    case 'saveCalibration':
++      await tracker.saveCalibration(payload.calibrationKey);
++      self.postMessage({ type: 'calibrationSaved', calibrationKey: payload.calibrationKey });
++      break;
++
+     default:
+       console.warn(`[WebEyeTrackWorker] Unknown message type: ${type}`);
+       break;

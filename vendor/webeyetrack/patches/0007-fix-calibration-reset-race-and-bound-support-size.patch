@@ -1,0 +1,62 @@
+From 8141a0f9ad31fa6bf6a6ed5fca05cb1b7339eaf0 Mon Sep 17 00:00:00 2001
+From: View <dev@example.com>
+Date: Sat, 12 Sep 2026 20:20:00 -0500
+Subject: [PATCH 7/7] fix: acknowledge calibration reset and bound frame batch
+
+Tell the host when the worker has actually discarded the previous target's
+frames. This prevents renderer results from racing the reset message. Limit
+each target to three frames so cumulative calibration work stays bounded.
+---
+ src/WebEyeTrack.ts       |  2 +-
+ src/WebEyeTrackProxy.ts  |  7 +++++++
+ src/WebEyeTrackWorker.ts |  1 +
+ 3 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/src/WebEyeTrack.ts b/src/WebEyeTrack.ts
+--- a/src/WebEyeTrack.ts
++++ b/src/WebEyeTrack.ts
+@@ -185,7 +185,7 @@ export default class WebEyeTrack {
+   calibrate(x: number, y: number): boolean {
+     this.latestMouseClick = { x, y, timestamp: Date.now() };
+ 
+-    const frames = this.recentCalibrationFrames.slice(-5);
++    const frames = this.recentCalibrationFrames.slice(-3);
+     if (!this.loaded || frames.length < 3) {
+       return false;
+     }
+diff --git a/src/WebEyeTrackProxy.ts b/src/WebEyeTrackProxy.ts
+--- a/src/WebEyeTrackProxy.ts
++++ b/src/WebEyeTrackProxy.ts
+@@ -88,6 +88,10 @@ export default class WebEyeTrackProxy {
+           this.onCalibrationPoint(mess.data.adapted, mess.data.x, mess.data.y);
+           break;
+ 
++        case 'calibrationPointBegun':
++          this.onCalibrationPointBegun();
++          break;
++
+         case 'calibrationSaved':
+           this.onCalibrationSaved(mess.data.calibrationKey);
+           break;
+@@ -187,5 +191,8 @@ export default class WebEyeTrackProxy {
+   /** Fired for each calibrate() call. `adapted` is false when no face was seen. */
+   onCalibrationPoint: (adapted: boolean, normX: number, normY: number) => void = () => {};
+ 
++  /** Fired after the worker has discarded frames from the previous target. */
++  onCalibrationPointBegun: () => void = () => {};
++
+   /** Fired once the personalised model has been written to storage. */
+   onCalibrationSaved: (calibrationKey: string) => void = () => {};
+diff --git a/src/WebEyeTrackWorker.ts b/src/WebEyeTrackWorker.ts
+--- a/src/WebEyeTrackWorker.ts
++++ b/src/WebEyeTrackWorker.ts
+@@ -84,6 +84,7 @@ self.onmessage = async (e) => {
+ 
+     case 'beginCalibrationPoint': {
+       tracker.beginCalibrationPoint();
++      self.postMessage({ type: 'calibrationPointBegun' });
+       break;
+     }
+ 
+-- 
+2.50.1

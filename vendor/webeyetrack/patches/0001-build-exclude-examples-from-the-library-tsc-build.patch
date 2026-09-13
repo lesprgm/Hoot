@@ -1,0 +1,28 @@
+From a555302a27e41bdcdf2a7b8be70465977ef48228 Mon Sep 17 00:00:00 2001
+From: mpl_risk <dev@example.com>
+Date: Wed, 8 Jul 2026 22:06:00 -1000
+Subject: [PATCH 1/5] build: exclude examples/ from the library tsc build
+
+The exclude entry still names example-app/, a directory that was renamed to
+examples/. ts-loader therefore type-checks the React example apps as part of
+the library build and fails with 59 TS17004 errors ('Cannot use JSX unless the
+--jsx flag is provided'), so `npm run build` does not succeed on a clean
+checkout.
+---
+ tsconfig.json | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/tsconfig.json b/tsconfig.json
+index b85e14d..e2efe6b 100644
+--- a/tsconfig.json
++++ b/tsconfig.json
+@@ -15,6 +15,7 @@
+     "skipLibCheck": true
+   },
+   "exclude": [
+-    "example-app",
++    "examples",
++    "node_modules"
+   ]
+ }
+\ No newline at end of file

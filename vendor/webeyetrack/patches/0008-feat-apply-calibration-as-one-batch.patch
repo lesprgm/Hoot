@@ -1,0 +1,136 @@
+From 439ed7635434cb46f929a24d0245c5468163bd32 Mon Sep 17 00:00:00 2001
+From: View <dev@example.com>
+Date: Sat, 12 Sep 2026 20:30:00 -0500
+Subject: [PATCH 8/8] feat: apply calibration as one batch
+
+Collect fresh frames for each target without updating the model, then perform
+one update over the complete support set. This removes repeated work and avoids
+giving early targets more gradient updates than later targets.
+---
+ src/WebEyeTrack.ts       | 35 ++++++++++++++++++++++++++---------
+ src/WebEyeTrackProxy.ts  | 10 ++++++++++
+ src/WebEyeTrackWorker.ts | 15 +++++++++++++++
+ 3 files changed, 51 insertions(+), 9 deletions(-)
+
+diff --git a/src/WebEyeTrack.ts b/src/WebEyeTrack.ts
+--- a/src/WebEyeTrack.ts
++++ b/src/WebEyeTrack.ts
+@@ -63,6 +63,7 @@ export default class WebEyeTrack {
+   private affineMatrix: tf.Tensor | null = null;
+   private kalmanFilter: KalmanFilter2D;
+   private recentCalibrationFrames: GazeResult[] = [];
++  private pendingCalibrationBatch: Array<{ frames: GazeResult[], x: number, y: number }> = [];
+ 
+   // Public variables
+   public loaded: boolean = false;
+@@ -185,25 +186,39 @@ export default class WebEyeTrack {
+   calibrate(x: number, y: number): boolean {
+     this.latestMouseClick = { x, y, timestamp: Date.now() };
+ 
+     const frames = this.recentCalibrationFrames.slice(-3);
+     if (!this.loaded || frames.length < 3) {
+       return false;
+     }
+ 
+-    this.adapt(
+-      frames.map((frame) => frame.eyePatch as ImageData),
+-      frames.map((frame) => frame.headVector as number[]),
+-      frames.map((frame) => frame.faceOrigin3D as number[]),
+-      frames.map(() => [x, y])
+-    );
+-    // Predictions before calibration belong to a different coordinate mapping.
+-    // Reset the temporal filter so they cannot drag the next target toward the
+-    // previous uncalibrated estimate.
+-    this.kalmanFilter = new KalmanFilter2D();
++    this.pendingCalibrationBatch.push({ frames, x, y });
+     this.recentCalibrationFrames = [];
+     return true;
+   }
+ 
++  applyCalibration(): boolean {
++    if (!this.loaded || this.pendingCalibrationBatch.length === 0) {
++      return false;
++    }
++
++    const eyePatches: ImageData[] = [];
++    const headVectors: number[][] = [];
++    const faceOrigins3D: number[][] = [];
++    const normPogs: number[][] = [];
++    for (const point of this.pendingCalibrationBatch) {
++      for (const frame of point.frames) {
++        eyePatches.push(frame.eyePatch as ImageData);
++        headVectors.push(frame.headVector as number[]);
++        faceOrigins3D.push(frame.faceOrigin3D as number[]);
++        normPogs.push([point.x, point.y]);
++      }
++    }
++    this.adapt(eyePatches, headVectors, faceOrigins3D, normPogs);
++    this.pendingCalibrationBatch = [];
++    this.kalmanFilter = new KalmanFilter2D();
++    return true;
++  }
++
+   beginCalibrationPoint(): void {
+     this.recentCalibrationFrames = [];
+   }
+diff --git a/src/WebEyeTrackProxy.ts b/src/WebEyeTrackProxy.ts
+--- a/src/WebEyeTrackProxy.ts
++++ b/src/WebEyeTrackProxy.ts
+@@ -88,6 +88,10 @@ export default class WebEyeTrackProxy {
+           this.onCalibrationPoint(mess.data.adapted, mess.data.x, mess.data.y);
+           break;
+ 
++        case 'calibrationApplied':
++          this.onCalibrationApplied(mess.data.adapted);
++          break;
++
+         case 'calibrationPointBegun':
+           this.onCalibrationPointBegun();
+           break;
+@@ -154,6 +158,10 @@ export default class WebEyeTrackProxy {
+     this.worker.postMessage({ type: 'calibrate', payload: { x: normX, y: normY } });
+   }
+ 
++  applyCalibration() {
++    this.worker.postMessage({ type: 'applyCalibration' });
++  }
++
+   /** Discard frames captured before the participant settled on a new target. */
+   beginCalibrationPoint() {
+     this.worker.postMessage({ type: 'beginCalibrationPoint' });
+@@ -191,5 +199,7 @@ export default class WebEyeTrackProxy {
+   /** Fired for each calibrate() call. `adapted` is false when no face was seen. */
+   onCalibrationPoint: (adapted: boolean, normX: number, normY: number) => void = () => {};
+ 
++  onCalibrationApplied: (adapted: boolean) => void = () => {};
++
+   /** Fired after the worker has discarded frames from the previous target. */
+   onCalibrationPointBegun: () => void = () => {};
+diff --git a/src/WebEyeTrackWorker.ts b/src/WebEyeTrackWorker.ts
+--- a/src/WebEyeTrackWorker.ts
++++ b/src/WebEyeTrackWorker.ts
+@@ -82,6 +82,22 @@ self.onmessage = async (e) => {
+       break;
+     }
+ 
++    case 'applyCalibration': {
++      status = 'calib';
++      self.postMessage({ type: 'statusUpdate', status: status});
++
++      try {
++        const adapted = tracker.applyCalibration();
++        self.postMessage({ type: 'calibrationApplied', adapted });
++      } catch (error) {
++        reportError('applyCalibration', error);
++      }
++
++      status = 'idle';
++      self.postMessage({ type: 'statusUpdate', status: status});
++      break;
++    }
++
+     case 'beginCalibrationPoint': {
+       tracker.beginCalibrationPoint();
+       self.postMessage({ type: 'calibrationPointBegun' });
+-- 
+2.50.1

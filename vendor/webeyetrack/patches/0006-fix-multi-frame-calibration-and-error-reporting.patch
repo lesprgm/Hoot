@@ -1,0 +1,119 @@
+From 6ed46edfaaf4dc287f5de7a0f5ce1710da40c001 Mon Sep 17 00:00:00 2001
+From: View <dev@example.com>
+Date: Sat, 12 Sep 2026 18:55:00 -0500
+Subject: [PATCH 6/6] fix: calibrate from fresh frame batches and report errors
+
+Use several frames captured after the participant settles on a target instead
+of fitting each target from one noisy image. Reset the temporal filter whenever
+the coordinate mapping changes. Report calibration exceptions to the host so a
+failed worker cannot leave the interface waiting indefinitely.
+---
+ src/WebEyeTrack.ts       | 25 ++++++++++++++++++-------
+ src/WebEyeTrackProxy.ts  |  5 +++++
+ src/WebEyeTrackWorker.ts | 13 ++++++++++---
+ 3 files changed, 33 insertions(+), 10 deletions(-)
+
+diff --git a/src/WebEyeTrack.ts b/src/WebEyeTrack.ts
+--- a/src/WebEyeTrack.ts
++++ b/src/WebEyeTrack.ts
+@@ -62,6 +62,7 @@ export default class WebEyeTrack {
+   private intrinsicsMatrix: Matrix = new Matrix(3, 3);
+   private affineMatrix: tf.Tensor | null = null;
+   private kalmanFilter: KalmanFilter2D;
++  private recentCalibrationFrames: GazeResult[] = [];
+ 
+   // Public variables
+   public loaded: boolean = false;
+@@ -184,19 +185,29 @@ export default class WebEyeTrack {
+   calibrate(x: number, y: number): boolean {
+     this.latestMouseClick = { x, y, timestamp: Date.now() };
+ 
+-    if (!this.loaded || !this.latestGazeResult) {
++    const frames = this.recentCalibrationFrames.slice(-5);
++    if (!this.loaded || frames.length < 3) {
+       return false;
+     }
+ 
+     this.adapt(
+-      [this.latestGazeResult?.eyePatch as ImageData],
+-      [this.latestGazeResult?.headVector as number[]],
+-      [this.latestGazeResult?.faceOrigin3D as number[]],
+-      [[x, y]]
++      frames.map((frame) => frame.eyePatch as ImageData),
++      frames.map((frame) => frame.headVector as number[]),
++      frames.map((frame) => frame.faceOrigin3D as number[]),
++      frames.map(() => [x, y])
+     );
++    // Predictions before calibration belong to a different coordinate mapping.
++    // Reset the temporal filter so they cannot drag the next target toward the
++    // previous uncalibrated estimate.
++    this.kalmanFilter = new KalmanFilter2D();
++    this.recentCalibrationFrames = [];
+     return true;
+   }
+ 
++  beginCalibrationPoint(): void {
++    this.recentCalibrationFrames = [];
++  }
++
+   computeFaceOrigin3D(frame: ImageData, normFaceLandmarks: Point[], faceLandmarks: Point[], faceRT: Matrix): number[] {
+ 
+     // Estimate the face width in centimeters if not set
+@@ -493,6 +504,10 @@ export default class WebEyeTrack {
+ 
+     // Update the latest gaze result
+     this.latestGazeResult = gaze_result;
++    this.recentCalibrationFrames.push(gaze_result);
++    if (this.recentCalibrationFrames.length > 8) {
++      this.recentCalibrationFrames.shift();
++    }
+     return gaze_result;
+   }
+ }
+\ No newline at end of file
+diff --git a/src/WebEyeTrackProxy.ts b/src/WebEyeTrackProxy.ts
+--- a/src/WebEyeTrackProxy.ts
++++ b/src/WebEyeTrackProxy.ts
+@@ -150,6 +150,11 @@ export default class WebEyeTrackProxy {
+     this.worker.postMessage({ type: 'calibrate', payload: { x: normX, y: normY } });
+   }
+ 
++  /** Discard frames captured before the participant settled on a new target. */
++  beginCalibrationPoint() {
++    this.worker.postMessage({ type: 'beginCalibrationPoint' });
++  }
++
+   /**
+    * Persist the current, personalised model. `onCalibrationSaved` fires when it
+    * is durable. Pass the same key to a later WebEyeTrackProxy to restore it.
+diff --git a/src/WebEyeTrackWorker.ts b/src/WebEyeTrackWorker.ts
+--- a/src/WebEyeTrackWorker.ts
++++ b/src/WebEyeTrackWorker.ts
+@@ -69,14 +69,23 @@ self.onmessage = async (e) => {
+       status = 'calib';
+       self.postMessage({ type: 'statusUpdate', status: status});
+ 
+-      const adapted = tracker.calibrate(payload.x, payload.y);
++      try {
++        const adapted = tracker.calibrate(payload.x, payload.y);
++        self.postMessage({ type: 'calibrated', adapted, x: payload.x, y: payload.y });
++      } catch (error) {
++        reportError('calibrate', error);
++      }
+ 
+       status = 'idle';
+       self.postMessage({ type: 'statusUpdate', status: status});
+-      self.postMessage({ type: 'calibrated', adapted, x: payload.x, y: payload.y });
+       break;
+     }
+ 
++    case 'beginCalibrationPoint': {
++      tracker.beginCalibrationPoint();
++      break;
++    }
++
+     case 'saveCalibration':
+       try {
+         await tracker.saveCalibration(payload.calibrationKey);
+-- 
+2.50.1

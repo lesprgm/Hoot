@@ -1,0 +1,308 @@
+From 8f7b97893b67ddc3264af282ce21004fb462dfa6 Mon Sep 17 00:00:00 2001
+From: mpl_risk <dev@example.com>
+Date: Wed, 8 Jul 2026 22:17:02 -1000
+Subject: [PATCH 3/5] feat: explicit calibrate(), optional click adaptation,
+ error signalling, destroy()
+
+Four small additions, all backwards compatible.
+
+calibrate(x, y): adapt to a known gaze target without the debounce and
+proximity heuristics that handleClick() applies to incidental clicks. Those
+heuristics are wrong for a calibration routine, which knows the participant is
+looking where it just asked them to click. The debounce is also rolling -- an
+ignored click resets the timer -- so a sequence of calibration dots clicked
+less than a second apart adapts only once, on the first dot. calibrate()
+returns whether a gaze result was available to pair with the target, so a
+caller can tell the participant to reposition instead of silently recording an
+uncalibrated point.
+
+adaptOnClick option and setAdaptOnClick(): the constructor unconditionally
+registered a global window click listener that adapts on every click anywhere
+on the page. Applications whose pages contain buttons, radios, or links have
+every such click retrain the model toward that control. The listener reference
+was also unreachable, so it could not be removed.
+
+onError / {type:'error'}: an initialize() rejection inside the worker was
+swallowed. 'ready' simply never arrived and the host could not distinguish a
+slow model load from a broken one.
+
+destroy(): terminate the worker and detach the click listener.
+---
+ src/WebEyeTrack.ts       | 41 +++++++++++++-----
+ src/WebEyeTrackProxy.ts  | 89 +++++++++++++++++++++++++++++++++-------
+ src/WebEyeTrackWorker.ts | 38 +++++++++++++++--
+ 3 files changed, 140 insertions(+), 28 deletions(-)
+
+diff --git a/src/WebEyeTrack.ts b/src/WebEyeTrack.ts
+index 6831eb0..fe1a2f9 100644
+--- a/src/WebEyeTrack.ts
++++ b/src/WebEyeTrack.ts
+@@ -149,25 +149,46 @@ export default class WebEyeTrack {
+     }
+ 
+     // Avoid pts that are too close to the last click
+-    if (this.latestMouseClick && 
+-        Math.abs(x - this.latestMouseClick.x) < 0.05 && 
++    if (this.latestMouseClick &&
++        Math.abs(x - this.latestMouseClick.x) < 0.05 &&
+         Math.abs(y - this.latestMouseClick.y) < 0.05) {
+       console.log("🖱️ Click ignored due to proximity to last click");
+       this.latestMouseClick = { x, y, timestamp: Date.now() };
+       return;
+     }
+ 
++    this.calibrate(x, y);
++  }
++
++  /**
++   * Adapt the model to a known gaze target, in normalized coordinates.
++   *
++   * This is the deliberate counterpart to handleClick(): a calibration routine
++   * knows the participant is looking at the point it just asked them to click,
++   * so the debounce and proximity heuristics that handleClick() applies to
++   * incidental clicks are not wanted here. They are also actively harmful for
++   * calibration -- the debounce is rolling (an ignored click resets the timer),
++   * so a run of dots clicked less than a second apart adapts only once.
++   *
++   * @returns true if the model was adapted. False means there was no usable
++   *   gaze result to pair with the target -- typically no face was detected --
++   *   and the caller should ask the participant to reposition rather than
++   *   silently record an uncalibrated point.
++   */
++  calibrate(x: number, y: number): boolean {
+     this.latestMouseClick = { x, y, timestamp: Date.now() };
+ 
+-    if (this.loaded && this.latestGazeResult) {
+-      // Adapt the model based on the click position
+-      this.adapt(
+-        [this.latestGazeResult?.eyePatch as ImageData],
+-        [this.latestGazeResult?.headVector as number[]],
+-        [this.latestGazeResult?.faceOrigin3D as number[]],
+-        [[x, y]]
+-      );
++    if (!this.loaded || !this.latestGazeResult) {
++      return false;
+     }
++
++    this.adapt(
++      [this.latestGazeResult?.eyePatch as ImageData],
++      [this.latestGazeResult?.headVector as number[]],
++      [this.latestGazeResult?.faceOrigin3D as number[]],
++      [[x, y]]
++    );
++    return true;
+   }
+ 
+   computeFaceOrigin3D(frame: ImageData, normFaceLandmarks: Point[], faceLandmarks: Point[], faceRT: Matrix): number[] {
+diff --git a/src/WebEyeTrackProxy.ts b/src/WebEyeTrackProxy.ts
+index a08ef60..8968790 100644
+--- a/src/WebEyeTrackProxy.ts
++++ b/src/WebEyeTrackProxy.ts
+@@ -17,10 +17,21 @@ export interface WebEyeTrackProxyOptions {
+   maxPoints?: number;
+   /** Seconds before click-derived calibration points expire. Defaults to 60. */
+   clickTTL?: number;
++  /**
++   * Treat every click anywhere on the page as a gaze target and adapt to it.
++   * Defaults to true, as before.
++   *
++   * Set false when the page contains controls the participant must click for
++   * reasons unrelated to where they are looking. Each such click would
++   * otherwise retrain the model toward that control and bias every subsequent
++   * gaze estimate toward it.
++   */
++  adaptOnClick?: boolean;
+ }
+ 
+ export default class WebEyeTrackProxy {
+   private worker: Worker;
++  private clickListener: ((e: MouseEvent) => void) | null = null;
+ 
+   public status: 'idle' | 'inference' | 'calib' = 'idle';
+ 
+@@ -31,9 +42,6 @@ export default class WebEyeTrackProxy {
+     console.log('WebEyeTrackProxy worker initialized');
+ 
+     this.worker.onmessage = (mess) =>{
+-      // console.log(`[WebEyeTrackWorker] ${mess.data}`)
+-      // console.log('[WebEyeTrackProxy] received message', mess);
+-
+       // Switch state based on message type
+       switch (mess.data.type) {
+         case 'ready':
+@@ -49,6 +57,8 @@ export default class WebEyeTrackProxy {
+               })
+             }
+           });
++
++          this.onReady();
+           break;
+ 
+         case 'stepResult':
+@@ -61,10 +71,18 @@ export default class WebEyeTrackProxy {
+           this.status = mess.data.status;
+           break;
+ 
++        case 'calibrated':
++          this.onCalibrationPoint(mess.data.adapted, mess.data.x, mess.data.y);
++          break;
++
+         case 'calibrationSaved':
+           this.onCalibrationSaved(mess.data.calibrationKey);
+           break;
+ 
++        case 'error':
++          this.onError(mess.data.phase, mess.data.message);
++          break;
++
+         default:
+           console.warn(`[WebEyeTrackProxy] Unknown message type: ${mess.data.type}`);
+           break;
+@@ -82,30 +100,71 @@ export default class WebEyeTrackProxy {
+       },
+     });
+ 
+-    // Add mouse handler for re-calibration
+-    window.addEventListener('click', (e: MouseEvent) => {
+-      // Convert px to normalized coordinates
+-      const normX = (e.clientX / window.innerWidth) - 0.5;
+-      const normY = (e.clientY / window.innerHeight) - 0.5;
+-      console.log(`[WebEyeTrackProxy] Click at (${normX}, ${normY})`);
+-      this.worker.postMessage({ type: 'click', payload: { x: normX, y: normY }});
+-    })
++    if (options.adaptOnClick ?? true) {
++      this.setAdaptOnClick(true);
++    }
++  }
++
++  /**
++   * Turn incidental click-driven adaptation on or off at any time. A
++   * calibration routine typically enables it (or uses `calibrate()` directly)
++   * and then disables it before measurement begins.
++   */
++  setAdaptOnClick(enabled: boolean) {
++    if (enabled && !this.clickListener) {
++      this.clickListener = (e: MouseEvent) => {
++        // Convert px to normalized coordinates
++        const normX = (e.clientX / window.innerWidth) - 0.5;
++        const normY = (e.clientY / window.innerHeight) - 0.5;
++        this.worker.postMessage({ type: 'click', payload: { x: normX, y: normY }});
++      };
++      window.addEventListener('click', this.clickListener);
++    } else if (!enabled && this.clickListener) {
++      window.removeEventListener('click', this.clickListener);
++      this.clickListener = null;
++    }
++  }
++
++  /**
++   * Adapt to a known gaze target, in normalized coordinates ([-0.5, 0.5]).
++   * Unlike an incidental click this is not debounced, so a calibration routine
++   * can present points as quickly as it likes. `onCalibrationPoint` reports
++   * whether the point was actually used.
++   */
++  calibrate(normX: number, normY: number) {
++    this.worker.postMessage({ type: 'calibrate', payload: { x: normX, y: normY } });
+   }
+ 
+   /**
+-   * Persist the current, personalised model. Resolve by listening on
+-   * `onCalibrationSaved`. Pass the same key to a later `WebEyeTrackProxy` to
+-   * restore the calibration.
++   * Persist the current, personalised model. `onCalibrationSaved` fires when it
++   * is durable. Pass the same key to a later WebEyeTrackProxy to restore it.
+    */
+   saveCalibration(calibrationKey: string) {
+     this.worker.postMessage({ type: 'saveCalibration', payload: { calibrationKey } });
+   }
+ 
++  /** Release the worker and the click listener. */
++  destroy() {
++    this.setAdaptOnClick(false);
++    this.worker.terminate();
++  }
++
+   // Callback for gaze results
+   onGazeResults: (gazeResult: GazeResult) => void = () => {
+     console.warn('onGazeResults callback not set');
+   }
+ 
+-  // Fired once the personalised model has been written to storage.
++  /** Fired once the model has loaded and frames are being processed. */
++  onReady: () => void = () => {};
++
++  /** Fired for each calibrate() call. `adapted` is false when no face was seen. */
++  onCalibrationPoint: (adapted: boolean, normX: number, normY: number) => void = () => {};
++
++  /** Fired once the personalised model has been written to storage. */
+   onCalibrationSaved: (calibrationKey: string) => void = () => {};
++
++  /** Fired when the worker fails. Without this, an init failure is silent. */
++  onError: (phase: string, message: string) => void = (phase, message) => {
++    console.error(`[WebEyeTrackProxy] ${phase} failed: ${message}`);
++  }
+ }
+diff --git a/src/WebEyeTrackWorker.ts b/src/WebEyeTrackWorker.ts
+index 1296c38..eafc3f4 100644
+--- a/src/WebEyeTrackWorker.ts
++++ b/src/WebEyeTrackWorker.ts
+@@ -6,6 +6,14 @@ const ctx: Worker = self as any;
+ let status: 'idle' | 'inference' | 'calib' = 'idle';
+ let lastTimestamp: number | null = null;
+ 
++function reportError(phase: string, error: any) {
++  self.postMessage({
++    type: 'error',
++    phase,
++    message: String((error && error.message) || error),
++  });
++}
++
+ self.onmessage = async (e) => {
+   const { type, payload } = e.data;
+ 
+@@ -13,7 +21,15 @@ self.onmessage = async (e) => {
+     case 'init': {
+       const options = payload ?? {};
+       tracker = new WebEyeTrack(options.maxPoints, options.clickTTL);
+-      await tracker.initialize(options.modelUrl, options.calibrationKey);
++      try {
++        await tracker.initialize(options.modelUrl, options.calibrationKey);
++      } catch (error) {
++        // Previously this rejection was swallowed inside the worker: 'ready'
++        // simply never arrived, and the host application could not distinguish
++        // a slow model load from a permanently broken one.
++        reportError('init', error);
++        return;
++      }
+       self.postMessage({ type: 'ready' });
+       status = 'idle';
+       break;
+@@ -45,9 +61,25 @@ self.onmessage = async (e) => {
+       self.postMessage({ type: 'statusUpdate', status: status});
+       break;
+ 
++    case 'calibrate': {
++      status = 'calib';
++      self.postMessage({ type: 'statusUpdate', status: status});
++
++      const adapted = tracker.calibrate(payload.x, payload.y);
++
++      status = 'idle';
++      self.postMessage({ type: 'statusUpdate', status: status});
++      self.postMessage({ type: 'calibrated', adapted, x: payload.x, y: payload.y });
++      break;
++    }
++
+     case 'saveCalibration':
+-      await tracker.saveCalibration(payload.calibrationKey);
+-      self.postMessage({ type: 'calibrationSaved', calibrationKey: payload.calibrationKey });
++      try {
++        await tracker.saveCalibration(payload.calibrationKey);
++        self.postMessage({ type: 'calibrationSaved', calibrationKey: payload.calibrationKey });
++      } catch (error) {
++        reportError('saveCalibration', error);
++      }
+       break;
+ 
+     default:

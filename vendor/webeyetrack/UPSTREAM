@@ -1,0 +1,6 @@
+# Upstream source this project's vendored eye-tracking bundle is built from.
+# Bump REF, run `tools/build_webeyetrack.sh`, and fix any patch rejects.
+
+REPO=https://github.com/RedForestAI/WebEyeTrack
+REF=14719ad861467c98890058f7c41a94638ae1db2b
+LICENSE=MIT

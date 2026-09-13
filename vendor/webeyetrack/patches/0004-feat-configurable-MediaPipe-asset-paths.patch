@@ -1,0 +1,158 @@
+From 01f0033a0adff608576924df7e094d69d9b02231 Mon Sep 17 00:00:00 2001
+From: mpl_risk <dev@example.com>
+Date: Thu, 9 Jul 2026 14:25:05 -1000
+Subject: [PATCH 4/5] feat: configurable MediaPipe asset paths
+
+FaceLandmarkerClient hardcoded two third-party URLs: the MediaPipe WASM runtime
+on jsDelivr and face_landmarker.task in a Google Cloud Storage bucket. Both are
+fetched in every user's browser at run time, so the library cannot be used in a
+deployment that must not depend on those hosts being reachable, or that must not
+disclose its users' IP addresses to them.
+
+Both are now options, defaulting to the same URLs as before. They are resolved
+against self.location.origin, because this code runs inside a Web Worker created
+from a blob: URL, where a root-relative path has no base to resolve against.
+---
+ src/FaceLandmarkerClient.ts | 41 ++++++++++++++++++++++++++++++++-----
+ src/WebEyeTrack.ts          | 10 ++++++---
+ src/WebEyeTrackProxy.ts     | 15 ++++++++++++++
+ src/WebEyeTrackWorker.ts    |  5 ++++-
+ 4 files changed, 62 insertions(+), 9 deletions(-)
+
+diff --git a/src/FaceLandmarkerClient.ts b/src/FaceLandmarkerClient.ts
+index 1e900e1..0f15f67 100644
+--- a/src/FaceLandmarkerClient.ts
++++ b/src/FaceLandmarkerClient.ts
+@@ -1,5 +1,29 @@
+ import { FaceLandmarker, FilesetResolver, DrawingUtils, FaceLandmarkerResult } from "@mediapipe/tasks-vision";
+ 
++/** Where the MediaPipe runtime and face model are fetched from. */
++export interface FaceLandmarkerAssets {
++  /**
++   * Directory holding `vision_wasm_internal.{js,wasm}` and the `nosimd`
++   * variants. Defaults to the jsDelivr CDN.
++   */
++  wasmPath?: string;
++  /** The `.task` face landmark model. Defaults to Google's public bucket. */
++  modelAssetPath?: string;
++}
++
++const DEFAULT_WASM_PATH = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm";
++const DEFAULT_MODEL_ASSET_PATH =
++  "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
++
++/**
++ * Resolve against the origin. This runs inside a Web Worker created from a
++ * blob: URL, which has no usable base URL, so a root-relative path such as
++ * "/static/mediapipe/wasm" cannot be fetched as given.
++ */
++function absolute(url: string): string {
++  return new URL(url, self.location.origin).toString();
++}
++
+ // References
+ // https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker/web_js#video
+ export default class FaceLandmarkerClient {
+@@ -8,13 +32,20 @@ export default class FaceLandmarkerClient {
+   constructor() {
+   }
+ 
+-  async initialize() {
+-    const filesetResolver = await FilesetResolver.forVisionTasks(
+-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+-    );
++  /**
++   * @param assets Override where MediaPipe's runtime and model come from.
++   *   The defaults reach out to two third-party CDNs at run time, which an
++   *   application may not be able to rely on -- or may not be permitted to
++   *   contact at all, since every user's browser then discloses its IP to them.
++   */
++  async initialize(assets: FaceLandmarkerAssets = {}) {
++    const wasmPath = absolute(assets.wasmPath ?? DEFAULT_WASM_PATH);
++    const modelAssetPath = absolute(assets.modelAssetPath ?? DEFAULT_MODEL_ASSET_PATH);
++
++    const filesetResolver = await FilesetResolver.forVisionTasks(wasmPath);
+     this.faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+       baseOptions: {
+-        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
++        modelAssetPath,
+         delegate: "GPU",
+       },
+       outputFaceBlendshapes: true,
+diff --git a/src/WebEyeTrack.ts b/src/WebEyeTrack.ts
+index fe1a2f9..0d99d14 100644
+--- a/src/WebEyeTrack.ts
++++ b/src/WebEyeTrack.ts
+@@ -4,7 +4,7 @@ import { Matrix } from 'ml-matrix';
+ 
+ import { Point, GazeResult } from "./types";
+ import BlazeGaze from "./BlazeGaze";
+-import FaceLandmarkerClient from "./FaceLandmarkerClient";
++import FaceLandmarkerClient, { FaceLandmarkerAssets } from "./FaceLandmarkerClient";
+ import { 
+   computeFaceOrigin3D, 
+   createIntrinsicsMatrix, 
+@@ -98,8 +98,12 @@ export default class WebEyeTrack {
+     this.clickTTL = clickTTL;
+   }
+ 
+-  async initialize(modelUrl?: string, calibrationKey?: string): Promise<void> {
+-    await this.faceLandmarkerClient.initialize();
++  async initialize(
++    modelUrl?: string,
++    calibrationKey?: string,
++    faceLandmarkerAssets?: FaceLandmarkerAssets,
++  ): Promise<void> {
++    await this.faceLandmarkerClient.initialize(faceLandmarkerAssets);
+     await this.blazeGaze.loadModel(modelUrl, calibrationKey);
+     this.loaded = true;
+   }
+diff --git a/src/WebEyeTrackProxy.ts b/src/WebEyeTrackProxy.ts
+index 8968790..c44e5f7 100644
+--- a/src/WebEyeTrackProxy.ts
++++ b/src/WebEyeTrackProxy.ts
+@@ -17,6 +17,19 @@ export interface WebEyeTrackProxyOptions {
+   maxPoints?: number;
+   /** Seconds before click-derived calibration points expire. Defaults to 60. */
+   clickTTL?: number;
++  /**
++   * Directory holding MediaPipe's `vision_wasm_internal.{js,wasm}` and its
++   * `nosimd` variants. Defaults to the jsDelivr CDN.
++   */
++  wasmPath?: string;
++  /**
++   * MediaPipe's `face_landmarker.task` model. Defaults to Google's public
++   * bucket. Together with `wasmPath` and `modelUrl`, overriding these lets an
++   * application run without contacting any third-party host at run time -- a
++   * hard requirement when users' browsers must not disclose their IP addresses
++   * to a third party.
++   */
++  faceModelUrl?: string;
+   /**
+    * Treat every click anywhere on the page as a gaze target and adapt to it.
+    * Defaults to true, as before.
+@@ -97,6 +110,8 @@ export default class WebEyeTrackProxy {
+         calibrationKey: options.calibrationKey,
+         maxPoints: options.maxPoints,
+         clickTTL: options.clickTTL,
++        wasmPath: options.wasmPath,
++        faceModelUrl: options.faceModelUrl,
+       },
+     });
+ 
+diff --git a/src/WebEyeTrackWorker.ts b/src/WebEyeTrackWorker.ts
+index eafc3f4..d4ed4b5 100644
+--- a/src/WebEyeTrackWorker.ts
++++ b/src/WebEyeTrackWorker.ts
+@@ -22,7 +22,10 @@ self.onmessage = async (e) => {
+       const options = payload ?? {};
+       tracker = new WebEyeTrack(options.maxPoints, options.clickTTL);
+       try {
+-        await tracker.initialize(options.modelUrl, options.calibrationKey);
++        await tracker.initialize(options.modelUrl, options.calibrationKey, {
++          wasmPath: options.wasmPath,
++          modelAssetPath: options.faceModelUrl,
++        });
+       } catch (error) {
+         // Previously this rejection was swallowed inside the worker: 'ready'
+         // simply never arrived, and the host application could not distinguish
