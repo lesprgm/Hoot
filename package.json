@@ -1,0 +1,55 @@
+{
+  "name": "gaze-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Gaze-to-Agent: a gaze-first accessibility interface that lets a motor-impaired user communicate intent with their eyes and delegate computer work to an AI agent.",
+  "main": "out/main/index.js",
+  "author": "View",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "predev": "node scripts/sync-realeye-assets.mjs",
+    "prebuild": "node scripts/sync-realeye-assets.mjs",
+    "dev": "electron-vite dev",
+    "demo:calibrate": "npm run build && GAZE_PROVIDER=webeyetrack SIMULATE_GAZE=false FORCE_CALIBRATION=false DEBUG_HUD=false electron-vite preview 2>&1 | tee /tmp/view-calibration.log",
+    "demo:gaze-unverified": "npm run build && GAZE_PROVIDER=webeyetrack SIMULATE_GAZE=false FORCE_CALIBRATION=false ALLOW_UNVERIFIED_GAZE=true DEBUG_HUD=false electron-vite preview 2>&1 | tee /tmp/view-calibration.log",
+    "demo:recalibrate": "npm run build && GAZE_PROVIDER=webeyetrack SIMULATE_GAZE=false FORCE_CALIBRATION=true DEBUG_HUD=false electron-vite preview 2>&1 | tee /tmp/view-calibration.log",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "test:e2e": "npm run build && playwright test",
+    "test:watch": "vitest",
+    "setup": "node scripts/setup-optional.mjs",
+    "build:sprites": "node scripts/build-owl-sprites.mjs",
+    "verify:webeyetrack": "bash scripts/build-webeyetrack.sh --check"
+  },
+  "dependencies": {
+    "@google/genai": "^2.22.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "zod": "^4.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^44.3.0",
+    "electron-vite": "^5.0.0",
+    "playwright": "^1.63.0",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.6",
+    "vitest": "^5.0.0"
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^4.2.0",
+    "@nut-tree-fork/nut-js": "^4.2.6",
+    "@realeye-io/webcam-eyetracker-light-open": "^1.1.0",
+    "get-windows": "^9.3.0",
+    "openai": "^7.15.0",
+    "sharp": "^0.35.4"
+  }
+}

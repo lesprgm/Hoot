@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+
+# Build and output artifacts
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# Environment & credentials
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# OS metadata
+.DS_Store
+**/.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Test coverage & test runner reports
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+blob-report/
+
+# Generated audio and video media
+*.aiff
+*.wav
+*.mp3
+*.mp4
+*.mov
+
+# Sprites & raw artwork sources
+src/renderer/public/sprites/
+vendor/owl-sprites/*.jpg
+
+# Editor and IDE metadata
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
