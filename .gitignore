@@ -49,3 +49,11 @@ vendor/owl-sprites/*.jpg
 .vscode/
 *.sublime-project
 *.sublime-workspace
+
+# Local planning and implementation drafts
+# These files remain available in an existing checkout but are not project docs.
+DEMO.md
+FINAL_INTERACTION_CONTRACT.md
+GAZE_AGENT_ONE_SHOT_SPEC.md
+NOTCH_SPRITE_UI_SPEC.md
+PROMPT_COMPLETION_TRUTH.md

@@ -2,7 +2,7 @@
 
 View is an Electron application with a privileged main process and a browser renderer. The renderer owns gaze acquisition, smoothing, dwell hit testing, the overlay, Dasher, and fixture pages. The main process owns active-window discovery, screen capture, permissions, text-to-speech, stateful session orchestration, and computer execution. The preload bridge exposes the allow-listed IPC operations in `src/shared/ipc.ts`.
 
-The current user-visible component and overlay boundary is defined in [COMPONENTS.md](./COMPONENTS.md). Fixture pages are standalone test inputs and are not mounted by the product overlay.
+The user-visible component and overlay boundary is summarized in the [README](./README.md#what-runs-on-screen). Fixture pages are standalone test inputs and are not mounted by the product overlay.
 
 The current build has no iPhone Mirroring integration. Active-window discovery and capture remain generic macOS operations; a narrow window can use the generic halo layout without adding phone-specific behavior.
 
