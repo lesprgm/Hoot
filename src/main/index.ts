@@ -102,9 +102,9 @@ async function createWindow(): Promise<void> {
   mainWindow.webContents.on("did-fail-load", (_event, code, description, url) => {
     console.error("renderer failed to load", { code, description, url });
   });
-  mainWindow.webContents.on("console-message", (_event, level, message) => {
-    if (message.startsWith("[calibration]")) console.log(message);
-    else if (level >= 2) console.error("renderer console", message);
+  mainWindow.webContents.on("console-message", (details) => {
+    if (details.message.startsWith("[calibration]")) console.log(details.message);
+    else if (details.level === "warning" || details.level === "error") console.error("renderer console", details.message);
   });
 
   const { width, height, scale } = await displayGeometry();
@@ -189,6 +189,10 @@ function registerIpc(): void {
 
   ipcMain.handle(IPC.summon, async () => {
     ctrl()?.summon();
+  });
+
+  ipcMain.handle(IPC.prefetchOption, async (_e, quadrant: "A" | "B" | "C" | "D") => {
+    await ctrl()?.prefetchOption(quadrant);
   });
 
   ipcMain.handle(IPC.selectOption, async (_e, quadrant: "A" | "B" | "C" | "D") => {
@@ -384,18 +388,22 @@ async function bootstrap(): Promise<void> {
   broadcast({ type: "sprite", sprite: "idle" });
   const decoderReady = config.decoderProvider === "gemini"
     ? config.hasGeminiKey
+    : config.decoderProvider === "openrouter"
+      ? config.hasOpenRouterKey || config.hasGeminiKey
     : config.decoderProvider === "openai"
-      ? config.hasOpenAiKey
+      ? config.hasOpenAiKey || config.hasGeminiKey
       : true;
-  const decoderKeyName = config.decoderProvider === "gemini" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
-  const startupNotice = !decoderReady
-      ? `Live gaze enabled. ${decoderKeyName} is not set, so ${config.decoderProvider} prompt decoding will stop with a configuration error.`
-      : config.decoderProvider === "gemini"
-        ? "Assistive session enabled with live gaze and Gemini 3.5 Flash decoding; execution follows its separate provider configuration."
-        : config.decoderProvider === "fixture"
-          ? "Assistive session enabled with live gaze and deterministic fixture decoding; execution follows its separate provider configuration."
-        : "Assistive session enabled with live gaze and OpenAI providers.";
-  if (!config.simulateGaze) broadcast({ type: "notice", text: startupNotice });
+  const decoderKeyName = config.decoderProvider === "gemini"
+    ? "GEMINI_API_KEY"
+    : config.decoderProvider === "openrouter"
+      ? "OPENROUTER_API_KEY"
+      : "OPENAI_API_KEY";
+  // Successful live startup is intentionally quiet. Provider identity remains
+  // available in telemetry and the debug HUD; only a missing required key is
+  // surfaced as an actionable notice.
+  if (!config.simulateGaze && !decoderReady) {
+    broadcast({ type: "notice", text: `Live gaze enabled. ${decoderKeyName} and GEMINI_API_KEY are not set, so ${config.decoderProvider} prompt decoding will stop with a configuration error.` });
+  }
 
   app.on("window-all-closed", () => {
     app.quit();
@@ -408,5 +416,6 @@ app.whenReady().then(bootstrap).catch((err) => {
 });
 
 app.on("will-quit", () => {
+  controller?.stopContextPolling();
   globalShortcut.unregisterAll();
 });

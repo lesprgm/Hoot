@@ -1,7 +1,13 @@
 import type { DecoderResponseShape, RawCandidateShape, DecoderInputShape } from "./decoderSchema";
 import type { DisplayOptionType } from "../../shared/types";
+import { requiresLexicalPreservation } from "./SemanticIntent";
 
 const FILLER_WORDS = new Set(["the", "a", "an", "to", "and", "please", "can you", "can", "for", "of", "in", "on"]);
+
+interface EvidenceRequirement {
+  term: string;
+  alternatives: readonly string[];
+}
 
 export interface ValidationReport {
   valid: boolean;
@@ -14,40 +20,43 @@ function words(s: string): string[] {
   return s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 }
 
-function evidenceTerms(semanticEvidence: string[]): string[] {
-  const out = new Set<string>();
+function evidenceRequirements(semanticEvidence: string[]): EvidenceRequirement[] {
+  const out = new Map<string, EvidenceRequirement>();
   for (const e of semanticEvidence) {
     // Evidence is machine-facing, e.g. "action=find" or "recipient=Daniel":
     // the KEY is metadata; only the VALUE carries user meaning to preserve.
-    const valuePart = e.includes("=") ? e.slice(e.indexOf("=") + 1) : e;
+    if (!requiresLexicalPreservation(e)) continue;
+    const valuePart = e;
     for (const part of valuePart.split(/[,;]/).map((p) => p.trim())) {
       if (!part) continue;
       if (part.startsWith("<") && part.endsWith(">")) continue;
       for (const w of words(part)) {
         if (w.length < 3 || FILLER_WORDS.has(w)) continue;
-        out.add(w);
+        out.set(w, { term: w, alternatives: [w] });
       }
     }
   }
-  return Array.from(out);
+  return Array.from(out.values());
 }
 
-function lexicallyContained(prompt: string, term: string): boolean {
+function lexicallyContained(prompt: string, alternatives: readonly string[]): boolean {
   const promptLower = prompt.toLowerCase();
-  if (words(promptLower).includes(term)) return true;
-  return term.length >= 5 && promptLower.includes(term);
+  const promptWords = words(promptLower);
+  return alternatives.some((term) => (
+    promptWords.includes(term) || (term.length >= 5 && promptLower.includes(term))
+  ));
 }
 
 export class CandidateValidator {
   validate(input: DecoderInputShape, response: DecoderResponseShape): ValidationReport {
     const errors: string[] = [];
     const flagged: string[] = [];
-    const terms = evidenceTerms(input.explicitSemanticEvidence);
+    const requirements = evidenceRequirements(input.explicitSemanticEvidence);
     const kept: RawCandidateShape[] = [];
 
-    for (const term of terms) {
-      if (!lexicallyContained(response.normalizedPrompt, term)) {
-        errors.push(`normalizedPrompt lost evidence: "${term}"`);
+    for (const requirement of requirements) {
+      if (!lexicallyContained(response.normalizedPrompt, requirement.alternatives)) {
+        errors.push(`normalizedPrompt lost evidence: "${requirement.term}"`);
       }
     }
 
@@ -59,17 +68,17 @@ export class CandidateValidator {
       if (wordsInLabel.length > 7) candidateErrors.push(`label too long: "${candidate.label}"`);
       if (!candidate.label.trim()) candidateErrors.push("empty label");
       if (!candidate.resultingPrompt.trim()) candidateErrors.push("empty resultingPrompt");
-      if (candidate.resultingPrompt.trim().length < candidate.continuation.length) {
-        candidateErrors.push("resultingPrompt shorter than continuation");
-      }
+      // `continuation` is machine-facing evidence and may contain compact
+      // identifiers or URLs that are longer than the visible prompt text.
+      // Evidence preservation below validates the user-facing result.
       if (!Number.isFinite(candidate.modelScore) || candidate.modelScore < 0 || candidate.modelScore > 1) {
         candidateErrors.push("modelScore out of range");
       }
       if (ids.has(candidate.id)) candidateErrors.push(`duplicate candidate id: "${candidate.id}"`);
       ids.add(candidate.id);
-      for (const term of terms) {
-        if (!lexicallyContained(candidate.resultingPrompt, term)) {
-          candidateErrors.push(`resultingPrompt lost evidence: "${term}"`);
+      for (const requirement of requirements) {
+        if (!lexicallyContained(candidate.resultingPrompt, requirement.alternatives)) {
+          candidateErrors.push(`resultingPrompt lost evidence: "${requirement.term}"`);
           break;
         }
       }

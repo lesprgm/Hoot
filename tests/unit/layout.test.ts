@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { screenCorners, windowHalo, pickLayoutMode, shelfRegions, spriteRegion } from "../../src/renderer/overlay/layout";
+import { screenCorners, confirmRegions, windowHalo, pickLayoutMode, shelfRegions, spriteRegion } from "../../src/renderer/overlay/layout";
 
 const SCREEN = { width: 2880, height: 1800 };
 
 describe("notch sprite geometry", () => {
-  it("uses the full perceived notch as the gaze target when notch width is known", () => {
-    expect(spriteRegion(SCREEN, 38, 1440, 180)).toEqual({ id: "sprite", x: 1350, y: 0, width: 180, height: 100 });
+  it("pads the perceived notch for reliable gaze targeting", () => {
+    expect(spriteRegion(SCREEN, 38, 1440, 180)).toEqual({ id: "sprite", x: 979, y: 0, width: 922, height: 576 });
   });
 
-  it("uses a compact top-center target when the display has no notch", () => {
-    expect(spriteRegion(SCREEN, 38)).toEqual({ id: "sprite", x: 1411, y: 30, width: 58, height: 58 });
-    expect(spriteRegion(SCREEN, 24).y).toBe(16);
-    expect(spriteRegion(SCREEN, 32, 735.5).x).toBe(707);
+  it("uses a generous top-center target when the display has no notch", () => {
+    expect(spriteRegion(SCREEN, 38)).toEqual({ id: "sprite", x: 979, y: 0, width: 922, height: 576 });
+    expect(spriteRegion(SCREEN, 24).y).toBe(0);
+    expect(spriteRegion(SCREEN, 32, 735.5).x).toBe(275);
   });
 });
 
@@ -43,6 +43,12 @@ describe("SCREEN_CORNERS geometry", () => {
     for (const q of ["A", "B", "C", "D"]) {
       expect(regions[q].y + regions[q].height).toBeLessThanOrEqual(shelfTop + 1);
     }
+  });
+});
+
+describe("confirmation geometry", () => {
+  it("uses the same large gaze targets as semantic choices", () => {
+    expect(confirmRegions(SCREEN)).toEqual(screenCorners(SCREEN));
   });
 });
 

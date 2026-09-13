@@ -11,10 +11,54 @@ import { Sprite, QuadrantGrid } from "./Overlay";
 import { NavigationController, type NavigationMode } from "../navigation/NavigationController";
 
 const SEMANTIC_STATES = new Set(["SEMANTIC", "DECODING_ALT", "CLARIFYING", "FALLBACK_TEXT", "SEMANTIC_PAUSED"]);
-const CONFIRM_STATES = new Set(["INTENT_CONFIRMATION", "CONSEQUENTIAL_CONFIRMATION", "EXECUTION_INTERRUPTED", "ERROR_RECOVERY"]);
+const CONFIRM_STATES = new Set(["CONSEQUENTIAL_CONFIRMATION", "EXECUTION_INTERRUPTED", "ERROR_RECOVERY"]);
+// Begin one focused-card request during the first deliberate gaze burst. The
+// three-look selector can then finish while the decoder is already working.
+const PREFETCH_PROGRESS_THRESHOLD = 0.18;
 
 let ttsAudio: HTMLAudioElement | null = null;
 let cueAudioContext: AudioContext | null = null;
+let pendingSpeech: Array<{ dataUrl: string }> = [];
+let speechPlaybackGeneration = 0;
+let observedSpeechDataUrl: string | null = null;
+
+function stopSpeechPlayback(): void {
+  speechPlaybackGeneration += 1;
+  pendingSpeech = [];
+  observedSpeechDataUrl = null;
+  ttsAudio?.pause();
+  ttsAudio = null;
+}
+
+function playNextSpeech(setView: React.Dispatch<React.SetStateAction<ViewState>>): void {
+  if (ttsAudio || pendingSpeech.length === 0) return;
+  const next = pendingSpeech.shift();
+  if (!next) return;
+  const generation = speechPlaybackGeneration;
+  let audio: HTMLAudioElement;
+  try {
+    audio = new Audio(next.dataUrl);
+  } catch (error) {
+    setView((current) => ({ ...current, notice: `Speech playback failed: ${(error as Error).message}` }));
+    playNextSpeech(setView);
+    return;
+  }
+  ttsAudio = audio;
+  const settle = (notice?: string) => {
+    if (generation !== speechPlaybackGeneration || ttsAudio !== audio) return;
+    ttsAudio = null;
+    setView((current) => ({
+      ...current,
+      speech: null,
+      sprite: current.interactionState === "EXECUTING" ? "computer_use_running" : "idle",
+      ...(notice ? { notice } : {}),
+    }));
+    playNextSpeech(setView);
+  };
+  audio.onended = () => settle();
+  audio.onerror = () => settle("Speech playback failed. Check the system audio output.");
+  void audio.play().catch((error) => settle(`Speech playback failed: ${(error as Error).message}`));
+}
 
 async function playAudioCue(cue: AudioCue): Promise<void> {
   try {
@@ -95,6 +139,8 @@ export function App(): React.ReactElement {
   const lastAnchorSent = useRef(0);
   const lastStatusSent = useRef(0);
   const navigationRef = useRef<NavigationController | null>(null);
+  const focusedPrefetchKeyRef = useRef<string | null>(null);
+  const requestedPrefetchKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     navigationRef.current = new NavigationController(({ direction, deltaPx }) => {
@@ -127,6 +173,7 @@ export function App(): React.ReactElement {
     });
     const unsub = subscribeView((message) => {
       if (message.type === "audio-cue") void playAudioCue(message.cue);
+      if (message.type === "speech-stop") stopSpeechPlayback();
       setView((v) => applyMessage(v, message));
     });
     void api.getTelemetry().then((t) => {
@@ -140,6 +187,7 @@ export function App(): React.ReactElement {
       activationGeneration.current += 1;
       unsub();
       window.removeEventListener("keydown", keyHandler);
+      stopSpeechPlayback();
       void providerRef.current?.dispose();
     };
   }, []);
@@ -164,6 +212,7 @@ export function App(): React.ReactElement {
     const tick = () => {
       const viewport = currentCalibrationViewport();
       if (calibratedViewport.current && !sameCalibrationViewport(calibratedViewport.current, viewport)) {
+        console.info(`[calibration] ${JSON.stringify({ at: new Date().toISOString(), event: "viewport_invalidated", calibrated: calibratedViewport.current, current: viewport })}`);
         calibratedViewport.current = null;
         latestGaze.current = null;
         void providerRef.current?.dispose();
@@ -191,6 +240,25 @@ export function App(): React.ReactElement {
         const nextProgress: Record<string, number> = {};
         if (pr) nextProgress[pr.regionId] = pr.progress01;
         const nextFocused = pr?.regionId ?? null;
+        const currentPrompt = viewRef.current.prompt;
+        const promptKey = currentPrompt
+          ? `${currentPrompt.sessionId}|${currentPrompt.displayPrompt}|${currentPrompt.options.map((option) => option.id).join(",")}`
+          : null;
+        const focusedKey = promptKey && nextFocused ? `${promptKey}|${nextFocused}` : null;
+        if (focusedKey !== focusedPrefetchKeyRef.current) {
+          focusedPrefetchKeyRef.current = focusedKey;
+          requestedPrefetchKeyRef.current = null;
+        }
+        const canPrefetch = viewRef.current.interactionState === "SEMANTIC"
+          && viewRef.current.prompt?.mode !== "hint"
+          && isQuadrantId(nextFocused)
+          && pr !== null
+          && pr.progress01 >= PREFETCH_PROGRESS_THRESHOLD
+          && focusedKey !== null;
+        if (canPrefetch && requestedPrefetchKeyRef.current !== focusedKey) {
+          requestedPrefetchKeyRef.current = focusedKey;
+          void api.prefetchOption(nextFocused);
+        }
         setProgress(nextProgress);
         setFocused(nextFocused);
         setGazePoint(sample.valid ? sample : null);
@@ -238,26 +306,14 @@ export function App(): React.ReactElement {
   useEffect(() => {
     const dataUrl = view.speech?.dataUrl;
     if (!dataUrl) {
-      ttsAudio?.pause();
-      ttsAudio = null;
+      observedSpeechDataUrl = null;
       return;
     }
-    const audio = new Audio(dataUrl);
-    ttsAudio?.pause();
-    ttsAudio = audio;
-    const settleSprite = () => {
-      if (ttsAudio === audio) ttsAudio = null;
-      setView((current) => ({
-        ...current,
-        speech: null,
-        sprite: current.interactionState === "EXECUTING" ? "computer_use_running" : "idle",
-      }));
-    };
-    audio.onended = settleSprite;
-    void audio.play().catch((error) => {
-      settleSprite();
-      setView((current) => ({ ...current, notice: `Speech playback failed: ${(error as Error).message}` }));
-    });
+    if (dataUrl !== observedSpeechDataUrl) {
+      observedSpeechDataUrl = dataUrl;
+      pendingSpeech.push({ dataUrl });
+    }
+    playNextSpeech(setView);
   }, [view.speech?.dataUrl]);
 
   async function startGazeListener(cfg: AppConfig, forceCalibration = cfg.forceCalibration): Promise<void> {
@@ -307,10 +363,10 @@ export function App(): React.ReactElement {
       calibratedViewport.current = viewport;
       const accepted = await api.startCalibration();
       if (!accepted.ok) throw new CalibrationFailedError(accepted.message);
-      const notice = provider.isCalibrationVerified?.() === false
-        ? "Unverified demo gaze is active. The five-point mapping is saved, but accuracy checks were skipped."
-        : provider.isCalibrationRestored?.() ? "Saved eye calibration restored. Gaze is active." : "Eye calibration saved. All four accuracy checks passed.";
-      setView((v) => ({ ...v, notice }));
+      console.info(`[calibration] ${JSON.stringify({ at: new Date().toISOString(), event: "activation_committed", provider: provider.name, viewport })}`);
+      // Successful activation is represented by the passive owl. Keep the
+      // overlay quiet; calibration failures still surface an explicit notice.
+      setView((v) => ({ ...v, notice: null }));
     }
   }
 
@@ -445,14 +501,6 @@ export function App(): React.ReactElement {
     }
     if (CONFIRM_STATES.has(st) && (regionId === "A" || regionId === "B" || regionId === "C" || regionId === "D")) {
       switch (st) {
-        case "INTENT_CONFIRMATION": {
-          const target = { A: "yes", B: "change", C: "read", D: "cancel" }[regionId];
-          if (target === "yes") void api.confirmYes();
-          else if (target === "change") void api.confirmChange();
-          else if (target === "read") void api.confirmRead();
-          else if (target === "cancel") void api.confirmCancel();
-          break;
-        }
         case "CONSEQUENTIAL_CONFIRMATION": {
           const map = { A: "approve", B: "change", C: "read", D: "cancel" };
           void api.consequentialChoice(map[regionId]);
@@ -486,7 +534,9 @@ export function App(): React.ReactElement {
     const notchRightX = configRef.current?.displayGeometry?.notchRightX;
     const notchWidth = notchLeftX != null && notchRightX != null ? notchRightX - notchLeftX : undefined;
 
-    regions.push(hit(spriteRegion(surface, notchHeight, notchCenterX, notchWidth), "sprite", v.interactionState === "EXECUTING" ? 650 : summon));
+    if (v.interactionState === "PASSIVE" || v.interactionState === "EXECUTING") {
+      regions.push(hit(spriteRegion(surface, notchHeight, notchCenterX, notchWidth), "sprite", v.interactionState === "EXECUTING" ? 650 : summon));
+    }
 
     if (SEMANTIC_STATES.has(v.interactionState) && v.prompt) {
       if (v.interactionState === "DECODING_ALT") return regions;
@@ -497,7 +547,6 @@ export function App(): React.ReactElement {
           const id = element.dataset.gazeControl!;
           regions.push(hit({ id, x: rect.x, y: rect.y, width: rect.width, height: rect.height }, id, id === "hint_commit" ? cancelDwell : dwell));
         });
-        regions.push(hit(spriteRegion(surface, notchHeight, notchCenterX, notchWidth), "sprite", summon));
         return regions;
       }
       const quadRegions = semanticLayout(surface, v).regions;
@@ -577,7 +626,6 @@ export function App(): React.ReactElement {
         </>
       ) : null}
 
-      {st === "INTENT_CONFIRMATION" && view.confirmation ? <ConfirmationCard intent={view.confirmation.intentText} /> : null}
       {st === "CONSEQUENTIAL_CONFIRMATION" && view.consequential ? <ConsequentialCard summary={view.consequential.pendingActionSummary} /> : null}
       {st === "EXECUTION_INTERRUPTED" && view.steering ? <SteeringCard status={view.steering.recentStatus} options={view.steering.options} /> : null}
       {st === "ERROR_RECOVERY" && view.recovery ? <RecoveryCard summary={view.recovery.errorSummary} options={view.recovery.choices} /> : null}
@@ -597,6 +645,10 @@ export function App(): React.ReactElement {
       {telemetryOpen && view.telemetry ? <TelemetryCard telemetry={view.telemetry} onClose={() => setTelemetryOpen(false)} /> : null}
     </div>
   );
+}
+
+function isQuadrantId(value: string | null): value is "A" | "B" | "C" | "D" {
+  return value === "A" || value === "B" || value === "C" || value === "D";
 }
 
 function DasherPanel({ frameRef, input, ready, running, focused, onToggle, onClear, onHint, onCommit }: {
@@ -622,18 +674,6 @@ function DasherPanel({ frameRef, input, ready, running, focused, onToggle, onCle
         <button data-gaze-control="hint_commit" className={focused === "hint_commit" ? "active primary" : "primary"} disabled={!input.trim()} onClick={onCommit}>USE FULL REQUEST</button>
       </div>
     </div>
-  );
-}
-
-function ConfirmationCard({ intent }: { intent: string }): React.ReactElement {
-  return (
-    <>
-    <div className="center-card">
-      <div className="center-title">Confirm your intent</div>
-      <div className="center-intent">{intent}</div>
-    </div>
-    <DecisionChoices labels={["YES / DO IT", "CHANGE IT", "READ / REPEAT", "CANCEL"]} />
-    </>
   );
 }
 

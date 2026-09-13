@@ -1,11 +1,11 @@
-import { describe, expect, it } from "vitest";
-import { OpenAILunaProvider } from "../../src/main/prompt-completion/CandidateGenerator";
+import { describe, expect, it, vi } from "vitest";
+import { OpenAILunaProvider, type DecoderProvider } from "../../src/main/prompt-completion/CandidateGenerator";
 import { CandidateValidator } from "../../src/main/prompt-completion/CandidateValidator";
 import { CandidateDiversifier, type DiversificationResult } from "../../src/main/prompt-completion/CandidateDiversifier";
 import { EmbeddingHub } from "../../src/main/prompt-completion/SemanticEmbeddings";
 import { FixtureDecoderProvider } from "../../src/main/prompt-completion/FixtureDecoderProvider";
 import { DEFAULT_LEXICON, PromptCompletionEngine, type EngineEvents, type EngineMetrics } from "../../src/main/prompt-completion/PromptCompletionEngine";
-import type { AppSettings, DecoderResponse, DisplayOption, PromptViewState } from "../../src/shared/types";
+import type { AppSettings, DecoderInput, DecoderResponse, DisplayOption, PromptViewState } from "../../src/shared/types";
 
 export const TEST_SETTINGS: AppSettings = {
   gazeDwellMs: 550,
@@ -24,6 +24,11 @@ export const TEST_SETTINGS: AppSettings = {
   decoderModel: "gpt-5.6-luna",
   executorModel: "gpt-6-astra",
   ttsModel: "eleven_flash_v2_5",
+  ttsStability: 0.46,
+  ttsSimilarityBoost: 0.8,
+  ttsStyle: 0.05,
+  ttsUseSpeakerBoost: false,
+  ttsSpeed: 1,
 };
 
 export function blankMetrics(): EngineMetrics {
@@ -53,7 +58,7 @@ describe("candidate validation", () => {
     const validator = new CandidateValidator();
     const input = {
       displayPrompt: "I want you to find a file…",
-      explicitSemanticEvidence: ["action=find", "target=file"],
+      explicitSemanticEvidence: ["find", "file"],
       hints: [],
       rejectedSets: [],
       historyDepth: 1,
@@ -85,7 +90,7 @@ describe("candidate validation", () => {
     const validator = new CandidateValidator();
     const input = {
       displayPrompt: "I want you to find a file…",
-      explicitSemanticEvidence: ["action=find", "target=file"],
+      explicitSemanticEvidence: ["find", "file"],
       hints: [],
       rejectedSets: [],
       historyDepth: 1,
@@ -103,6 +108,50 @@ describe("candidate validation", () => {
     expect(report.valid).toBe(false);
     expect(report.errors).toContain('normalizedPrompt lost evidence: "find"');
     expect(report.errors).toContain('normalizedPrompt lost evidence: "file"');
+  });
+
+  it("leaves structured evidence preservation to the semantic accumulator", () => {
+    const validator = new CandidateValidator();
+    const input: DecoderInput = {
+      displayPrompt: "I want you to open Spotify…",
+      explicitSemanticEvidence: ["action=open", "target=Spotify"],
+      hints: [],
+      rejectedSets: [],
+      historyDepth: 2,
+      userLexicon: DEFAULT_LEXICON,
+      optionalContext: { activeApp: null, activeAppUrl: null, surfaceType: null, visibleReferent: null, gazeTargetDescription: null, capturedImageDataUrl: null },
+      consecutiveNoneCount: 0,
+      clarificationAnswers: [],
+      turn: 2,
+    };
+    const candidates: DecoderResponse["candidates"] = [
+      ["launch", "Launch Spotify"],
+      ["use", "Use Spotify"],
+      ["play", "Play a song on Spotify"],
+      ["browse", "Browse Spotify"],
+    ].map(([id, resultingPrompt], index) => ({
+      id,
+      label: id.toUpperCase(),
+      continuation: `operation=${id}`,
+      resultingPrompt,
+      modelScore: 0.9 - index * 0.05,
+      type: "continuation",
+      semanticGroup: id,
+      estimatedLikelihood: 0.9 - index * 0.05,
+      introducesNewMeaning: false,
+    }));
+    const response: DecoderResponse = {
+      mode: "predict",
+      normalizedPrompt: "I want you to use Spotify…",
+      promptIsExecutable: false,
+      openSlots: [],
+      candidates,
+    };
+
+    expect(validator.validate(input, response).valid).toBe(true);
+
+    response.normalizedPrompt = "I want you to launch Music…";
+    expect(validator.validate(input, response).valid).toBe(true);
   });
 
   it("rejects duplicate candidate ids", () => {
@@ -182,6 +231,42 @@ describe("diversity selection", () => {
   });
 });
 
+describe("four-option provider display", () => {
+  it("preserves OpenRouter's conditioned top four even when they share a semantic group", async () => {
+    const views: PromptViewState[] = [];
+    const engine = new PromptCompletionEngine(blankEvents([], views), blankMetrics(), TEST_SETTINGS, false, "openrouter");
+    const labels = ["RECENT FILE", "DOWNLOADED FILE", "SHARED FILE", "FILE BY NAME"];
+    const response: DecoderResponse = {
+      mode: "predict",
+      normalizedPrompt: "I want you to find…",
+      promptIsExecutable: false,
+      openSlots: [{ name: "object", description: "what to find" }],
+      candidates: labels.map((label, index) => ({
+        id: `conditioned_${index}`,
+        label,
+        continuation: `object=file_${index}`,
+        resultingPrompt: `I want you to find ${label.toLowerCase()}…`,
+        modelScore: 0.9 - index * 0.1,
+        type: "continuation" as const,
+        semanticGroup: "object",
+        estimatedLikelihood: 0.9 - index * 0.1,
+        introducesNewMeaning: false,
+      })),
+    };
+    const provider: DecoderProvider = {
+      name: "fake-openrouter",
+      generateCandidates: vi.fn(async () => response),
+      generateClarification: vi.fn(async () => ({ spokenQuestion: "Which?", answers: [] })),
+    };
+    (engine as unknown as { provider: DecoderProvider }).provider = provider;
+
+    await engine.start(null);
+    await engine.selectOption("A");
+
+    expect(views[views.length - 1].options.map((option) => option.label)).toEqual(labels);
+  });
+});
+
 describe("fixture decoder — blank desktop benchmark prompt", () => {
   it("opens immediately with broad action families instead of guessed tasks", async () => {
     const views: PromptViewState[] = [];
@@ -199,6 +284,168 @@ describe("fixture decoder — blank desktop benchmark prompt", () => {
       "SEND / TELL…",
     ]);
     expect(decoderCalls).toBe(0);
+  });
+
+  it("offers explicit media operations after a named app target", () => {
+    const engine = new PromptCompletionEngine(blankEvents([], []), blankMetrics(), TEST_SETTINGS, false);
+    const input: DecoderInput = {
+      displayPrompt: "I want you to open Spotify…",
+      explicitSemanticEvidence: ["action=open", "target=Spotify"],
+      hints: [],
+      rejectedSets: [],
+      historyDepth: 2,
+      userLexicon: DEFAULT_LEXICON,
+      optionalContext: { activeApp: null, activeAppUrl: null, surfaceType: null, visibleReferent: null, gazeTargetDescription: null, capturedImageDataUrl: null },
+      consecutiveNoneCount: 0,
+      clarificationAnswers: [],
+      turn: 2,
+    };
+    const response = (engine as unknown as { mediaRefinementResponse(value: DecoderInput): DecoderResponse | null }).mediaRefinementResponse(input);
+
+    expect(response?.openSlots.map((slot) => slot.name)).toEqual(["media_operation"]);
+    expect(response?.candidates.map((candidate) => candidate.label)).toEqual([
+      "JUST OPEN SPOTIFY",
+      "PLAY A SONG",
+      "PLAY A PLAYLIST / ALBUM",
+      "SEARCH / BROWSE SPOTIFY",
+    ]);
+    expect(response?.candidates[0].type).toBe("do_that");
+    expect(response?.candidates.slice(1).every((candidate) => candidate.type === "continuation")).toBe(true);
+    expect(new CandidateValidator().validate(input, response!).valid).toBe(true);
+  });
+
+  it("preserves a media target that exists only in accepted evidence", () => {
+    const engine = new PromptCompletionEngine(blankEvents([], []), blankMetrics(), TEST_SETTINGS, false);
+    const input: DecoderInput = {
+      displayPrompt: "I want you to open…",
+      explicitSemanticEvidence: ["action=open", "target=Spotify"],
+      hints: [],
+      rejectedSets: [],
+      historyDepth: 2,
+      userLexicon: DEFAULT_LEXICON,
+      optionalContext: { activeApp: null, activeAppUrl: null, surfaceType: null, visibleReferent: null, gazeTargetDescription: null, capturedImageDataUrl: null },
+      consecutiveNoneCount: 0,
+      clarificationAnswers: [],
+      turn: 2,
+    };
+    const response = (engine as unknown as { mediaRefinementResponse(value: DecoderInput): DecoderResponse | null }).mediaRefinementResponse(input);
+
+    expect(response?.normalizedPrompt.toLowerCase()).toContain("spotify");
+    expect(response?.candidates.every((candidate) => candidate.resultingPrompt.toLowerCase().includes("spotify"))).toBe(true);
+    expect(new CandidateValidator().validate(input, response!).valid).toBe(true);
+  });
+
+  it("confirms the validated terminal prompt rather than a stale session display", async () => {
+    const intents: string[] = [];
+    const engine = new PromptCompletionEngine(blankEvents(intents, []), blankMetrics(), TEST_SETTINGS, false);
+    await engine.start(null);
+    const internals = engine as unknown as {
+      session: { displayPrompt: string };
+      currentNode: { displayedCandidates: DisplayOption[] };
+    };
+    internals.session.displayPrompt = "I want you to open…";
+    internals.currentNode.displayedCandidates = [{
+      id: "media_open_spotify",
+      quadrant: "A",
+      label: "JUST OPEN SPOTIFY",
+      resultingPrompt: "I want you to open Spotify",
+      type: "do_that",
+      semanticGroup: "media_open",
+      continuation: "",
+    }];
+
+    await engine.selectOption("A");
+
+    expect(intents).toEqual(["I want you to open Spotify"]);
+  });
+
+  it("uses the app's natural media unit for YouTube without exposing a special mode", () => {
+    const engine = new PromptCompletionEngine(blankEvents([], []), blankMetrics(), TEST_SETTINGS, false);
+    const input: DecoderInput = {
+      displayPrompt: "I want you to open YouTube…",
+      explicitSemanticEvidence: ["action=open", "target=YouTube"],
+      hints: [],
+      rejectedSets: [],
+      historyDepth: 2,
+      userLexicon: DEFAULT_LEXICON,
+      optionalContext: { activeApp: "Google Chrome", activeAppUrl: "https://www.youtube.com/watch?v=RyBEUyEtxQo", surfaceType: "media_player", visibleReferent: null, gazeTargetDescription: null, capturedImageDataUrl: null },
+      consecutiveNoneCount: 0,
+      clarificationAnswers: [],
+      turn: 2,
+    };
+    const response = (engine as unknown as { mediaRefinementResponse(value: DecoderInput): DecoderResponse | null }).mediaRefinementResponse(input);
+
+    expect(response?.candidates.map((candidate) => candidate.label)).toEqual([
+      "RANDOM FROM HOMEPAGE",
+      "RANDOM FROM FIRST PAGE",
+      "PICK SOMETHING SPECIFIC",
+      "SEARCH / BROWSE YOUTUBE",
+    ]);
+    expect(response?.candidates[0].continuation).toBe("operation=random_video;source=homepage");
+    expect(response?.candidates[1].continuation).toBe("operation=random_video;source=first_page");
+    expect(new CandidateValidator().validate(input, response!).valid).toBe(true);
+  });
+
+  it("reuses a targeted prefetch when a semantic card is selected", async () => {
+    const views: PromptViewState[] = [];
+    const metrics = {
+      ...blankMetrics(),
+      recordPrefetchHit: vi.fn(),
+      recordPrefetchMiss: vi.fn(),
+    };
+    const engine = new PromptCompletionEngine(
+      blankEvents([], views),
+      metrics,
+      { ...TEST_SETTINGS, prefetchEnabled: true },
+      false,
+    );
+
+    const root = await engine.start(null);
+    await engine.prefetchOption("A");
+    await engine.selectOption("A");
+
+    expect(metrics.recordPrefetchHit).toHaveBeenCalledTimes(1);
+    expect(metrics.recordPrefetchMiss).not.toHaveBeenCalled();
+    expect(views[views.length - 1].displayPrompt).toContain("find");
+    expect(root.options).toHaveLength(4);
+  });
+
+  it("waits for an in-flight targeted prefetch instead of duplicating the request", async () => {
+    const views: PromptViewState[] = [];
+    const metrics = {
+      ...blankMetrics(),
+      recordPrefetchHit: vi.fn(),
+      recordPrefetchMiss: vi.fn(),
+    };
+    const engine = new PromptCompletionEngine(
+      blankEvents([], views),
+      metrics,
+      { ...TEST_SETTINGS, prefetchEnabled: true },
+      false,
+    );
+    const provider = (engine as unknown as { provider: FixtureDecoderProvider }).provider;
+    const originalGenerate = provider.generateCandidates.bind(provider);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let calls = 0;
+    vi.spyOn(provider, "generateCandidates").mockImplementation(async (input) => {
+      calls += 1;
+      await gate;
+      return originalGenerate(input);
+    });
+
+    await engine.start(null);
+    const prefetch = engine.prefetchOption("A");
+    expect(calls).toBe(1);
+    const selection = engine.selectOption("A");
+    await Promise.resolve();
+    expect(calls).toBe(1);
+
+    release();
+    await Promise.all([prefetch, selection]);
+    expect(calls).toBe(1);
+    expect(metrics.recordPrefetchHit).toHaveBeenCalledTimes(1);
+    expect(metrics.recordPrefetchMiss).not.toHaveBeenCalled();
   });
 
   it("completes a full prompt without any screen context using only semantic selections", async () => {
@@ -235,8 +482,8 @@ describe("fixture decoder — blank desktop benchmark prompt", () => {
     await engine.selectOption(email.quadrant);
 
     const view7 = views[views.length - 1];
-    const daniel = optionIn(view7, "DANIEL");
-    await engine.selectOption(daniel.quadrant);
+    const professorLee = optionIn(view7, "PROFESSOR LEE");
+    await engine.selectOption(professorLee.quadrant);
 
     const view8 = views[views.length - 1];
     const doThat = optionIn(view8, "DO THAT");
@@ -250,7 +497,7 @@ describe("fixture decoder — blank desktop benchmark prompt", () => {
     expect(intent).toContain("summarize");
     expect(intent).toContain("methods");
     expect(intent).toContain("email");
-    expect(intent).toContain("daniel");
+    expect(intent).toContain("professor lee");
   });
 
   it("two consecutive MORE actions enter clarification and one answer resumes prediction", async () => {
@@ -318,13 +565,13 @@ describe("fixture decoder — blank desktop benchmark prompt", () => {
     const hint = optionIn(view2, "HINT");
     await engine.selectOption(hint.quadrant);
 
-    const hinted = await engine.updateHint("dan");
-    const daniel = hinted.options.find((o) => o.label.includes("DANIEL"));
-    expect(daniel).toBeTruthy();
-    await engine.acceptHintCandidate(daniel!.id);
+    const hinted = await engine.updateHint("prof");
+    const professorLee = hinted.options.find((o) => o.label.includes("PROFESSOR LEE"));
+    expect(professorLee).toBeTruthy();
+    await engine.acceptHintCandidate(professorLee!.id);
     expect(intents).toHaveLength(0);
     const after = views[views.length - 1];
-    expect(after.displayPrompt.toLowerCase()).toContain("daniel");
+    expect(after.displayPrompt.toLowerCase()).toContain("professor lee");
   });
 });
 

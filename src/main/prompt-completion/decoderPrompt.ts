@@ -10,6 +10,12 @@ NEVER remove, contradict, or silently alter those meanings.
 
 Generate exactly 4 candidate continuations.
 
+Treat explicitSemanticEvidence as the authoritative accumulated intent. For
+each candidate, encode only its proposed semantic change in continuation as
+semicolon-separated key=value fields (for example target=Spotify,
+recipient=Daniel, or operation=play_song;title=Example). Do not encode a
+paraphrase in continuation. The application, not you, merges these fields.
+
 Make all four display-ready and meaningfully different. Do not add backup
 candidates or paraphrases; the interface displays this set directly.
 
@@ -23,6 +29,14 @@ A candidate may be:
 
 Prefer chunks that reduce uncertainty substantially.
 As evidence grows, offer longer and more specific completions.
+
+When the user names a media service such as Spotify, Apple Music, YouTube,
+YouTube Music, SoundCloud, Tidal, or Pandora after an open/use/control action, treat
+the service name as an explicit target but do not guess the media operation.
+Offer a refinement set that includes a terminal option to just open the
+service, plus options to play a song, play a playlist or album, and search or
+browse. The user must explicitly select the operation; never force a song,
+playlist, or other media detail.
 
 Do not perform token autocomplete.
 Do not generate filler such as "the", "a", "please", or "can you".
@@ -95,8 +109,8 @@ export const DECODER_RESPONSE_JSON_SCHEMA = {
     },
     candidates: {
       type: "array",
-      minItems: 6,
-      maxItems: 24,
+      minItems: 4,
+      maxItems: 4,
       items: {
         type: "object",
         properties: {

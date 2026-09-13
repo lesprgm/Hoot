@@ -13,6 +13,7 @@
     "predev": "node scripts/sync-realeye-assets.mjs",
     "prebuild": "node scripts/sync-realeye-assets.mjs",
     "dev": "electron-vite dev",
+    "agent:live": "npm run build && GAZE_PROVIDER=webeyetrack SIMULATE_GAZE=false FORCE_CALIBRATION=false ALLOW_UNVERIFIED_GAZE=true EXECUTOR_PROVIDER=openai EXECUTION_MODE=live DEBUG_HUD=false electron-vite preview 2>&1 | tee /tmp/view-live.log",
     "demo:calibrate": "npm run build && GAZE_PROVIDER=webeyetrack SIMULATE_GAZE=false FORCE_CALIBRATION=false DEBUG_HUD=false electron-vite preview 2>&1 | tee /tmp/view-calibration.log",
     "demo:gaze-unverified": "npm run build && GAZE_PROVIDER=webeyetrack SIMULATE_GAZE=false FORCE_CALIBRATION=false ALLOW_UNVERIFIED_GAZE=true DEBUG_HUD=false electron-vite preview 2>&1 | tee /tmp/view-calibration.log",
     "demo:recalibrate": "npm run build && GAZE_PROVIDER=webeyetrack SIMULATE_GAZE=false FORCE_CALIBRATION=true DEBUG_HUD=false electron-vite preview 2>&1 | tee /tmp/view-calibration.log",

@@ -1,5 +1,8 @@
 import type { WindowContext } from "../../shared/types";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 interface ActiveWindowResult {
   appName: string;
@@ -60,12 +63,15 @@ class OsascriptSource implements ActiveWindowSource {
   readonly name = "osascript";
   async getActive(): Promise<ActiveWindowResult | null> {
     try {
-      const out = execFileSync("/usr/bin/osascript", [
+      // Use an asynchronous child process. The synchronous variant can leave
+      // a broken stdin/stdout pipe behind when System Events exits while the
+      // overlay changes focus, which can surface as an uncaught EPIPE in the
+      // Electron main process during calibration completion.
+      const result = await execFileAsync("/usr/bin/osascript", [
         "-e",
         'tell application "System Events" to get name of first application process whose frontmost is true',
-      ]);
-      const bytes = out as unknown as Uint8Array;
-      const appName = Buffer.from(bytes).toString("utf8").trim();
+      ], { encoding: "utf8", timeout: 2_000, maxBuffer: 16 * 1024 });
+      const appName = String(result.stdout).trim();
       if (!appName) return null;
       return {
         appName,

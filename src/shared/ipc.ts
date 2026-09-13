@@ -7,6 +7,7 @@ export const IPC = {
   enterDemoMode: "app:demo-mode",
   quitApp: "app:quit",
   summon: "session:summon",
+  prefetchOption: "session:prefetch-option",
   selectOption: "session:select-option",
   more: "session:more",
   back: "session:back",

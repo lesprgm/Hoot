@@ -11,6 +11,20 @@ import { config, apiKey } from "../config";
 const TTS_ENDPOINT = "https://api.elevenlabs.io/v1/text-to-speech";
 const execFileAsync = promisify(execFile);
 
+function supportsBreakTags(model: string): boolean {
+  return model.startsWith("eleven_flash") || model.startsWith("eleven_turbo") || model.startsWith("eleven_multilingual");
+}
+
+/** Add one short, model-supported pause to acknowledgement phrases.
+ *
+ * Flash v2.5 understands SSML break tags. The pause gives the voice a small
+ * turn-taking beat without adding a second request or delaying playback.
+ */
+function naturalizeSpeechText(text: string, model: string): string {
+  if (!supportsBreakTags(model)) return text;
+  return text.replace(/^Okay — /, 'Okay — <break time="0.18s" /> ');
+}
+
 function now(): number {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
 }
@@ -27,7 +41,17 @@ export class ElevenLabsTTS implements TTSProvider {
   async synthesize(text: string): Promise<TTSResult | null> {
     if (!this.available) throw new Error("ElevenLabs requires an API key and voice ID.");
     const started = now();
+    const model = config.settings.ttsModel;
     const url = `${TTS_ENDPOINT}/${this.voiceId}/stream?output_format=mp3_44100_128&optimize_streaming_latency=4`;
+    const voiceSettings = model === "eleven_v3"
+      ? { stability: config.settings.ttsStability }
+      : {
+          stability: config.settings.ttsStability,
+          similarity_boost: config.settings.ttsSimilarityBoost,
+          style: config.settings.ttsStyle,
+          use_speaker_boost: config.settings.ttsUseSpeakerBoost,
+          speed: config.settings.ttsSpeed,
+        };
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -36,9 +60,9 @@ export class ElevenLabsTTS implements TTSProvider {
         Accept: "audio/mpeg",
       },
       body: JSON.stringify({
-        text,
-        model_id: config.settings.ttsModel,
-        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+        text: naturalizeSpeechText(text, model),
+        model_id: model,
+        voice_settings: voiceSettings,
       }),
     });
     if (!response.ok) throw new Error(`ElevenLabs returned HTTP ${response.status}.`);
@@ -104,7 +128,8 @@ export class MuteTTS implements TTSProvider {
 export class TTSService {
   private provider: TTSProvider;
   private prefetch = new Map<string, Promise<TTSResult | null>>();
-  private requestGeneration = 0;
+  private cancelGeneration = 0;
+  private speechQueue: Promise<void> = Promise.resolve();
   onAudio: ((result: TTSResult) => void) | null = null;
   onError: ((message: string) => void) | null = null;
 
@@ -122,19 +147,27 @@ export class TTSService {
     return this.provider.name;
   }
 
-  async speak(text: string): Promise<void> {
-    if (!text.trim()) return;
-    const generation = ++this.requestGeneration;
-    try {
-      const result = await this.synthesize(text);
-      if (generation !== this.requestGeneration) return;
-      if (result) this.play(result);
-      else if (this.provider.name !== "mute") this.onError?.(`${this.provider.name} returned no audio.`);
-    } catch (error) {
-      if (generation !== this.requestGeneration) return;
-      const message = error instanceof Error ? error.message : String(error);
-      this.onError?.(`${this.provider.name} speech failed: ${message}`);
-    }
+  speak(text: string): Promise<void> {
+    if (!text.trim()) return Promise.resolve();
+    const generation = this.cancelGeneration;
+    const speakOne = async (): Promise<void> => {
+      if (generation !== this.cancelGeneration) return;
+      try {
+        const result = await this.synthesize(text);
+        if (generation !== this.cancelGeneration) return;
+        if (result) this.play(result);
+        else if (this.provider.name !== "mute") this.onError?.(`${this.provider.name} returned no audio.`);
+      } catch (error) {
+        if (generation !== this.cancelGeneration) return;
+        const message = error instanceof Error ? error.message : String(error);
+        this.onError?.(`${this.provider.name} speech failed: ${message}`);
+      }
+    };
+    const scheduled = this.speechQueue.then(speakOne, speakOne);
+    // Keep the chain alive after a failed callback so later selections still
+    // receive feedback. speakOne reports provider errors through onError.
+    this.speechQueue = scheduled.catch(() => undefined);
+    return scheduled;
   }
 
   private async synthesize(text: string): Promise<TTSResult | null> {
@@ -145,8 +178,11 @@ export class TTSService {
     }
     const promise = this.provider.synthesize(text);
     this.prefetch.set(text, promise);
-    const result = await promise;
-    return result;
+    try {
+      return await promise;
+    } finally {
+      if (this.prefetch.get(text) === promise) this.prefetch.delete(text);
+    }
   }
 
   prefetchText(text: string): void {
@@ -163,7 +199,9 @@ export class TTSService {
   }
 
   stop(): void {
-    this.requestGeneration += 1;
+    this.cancelGeneration += 1;
+    this.speechQueue = Promise.resolve();
+    this.prefetch.clear();
     this.provider.stop();
   }
 }

@@ -65,7 +65,9 @@ test("simulation exercises stationary summon and explicit Dasher text entry", as
       expect(notch).not.toBeNull();
       expect(notch!.x).toBeCloseTo(geometry.displayGeometry.notchLeftX, 0);
       expect(notch!.width).toBeCloseTo(geometry.displayGeometry.notchRightX - geometry.displayGeometry.notchLeftX, 0);
-      expect(notch!.height).toBeCloseTo(geometry.displayGeometry.topInset + 62, 0);
+      expect(notch!.y).toBeCloseTo(-2, 0);
+      expect(notch!.height).toBeCloseTo(geometry.displayGeometry.topInset + 64, 0);
+      expect(notch!.y + notch!.height).toBeCloseTo(geometry.displayGeometry.topInset + 62, 0);
     }
 
     const sprite = await window.locator(".sprite").boundingBox();
@@ -139,6 +141,35 @@ test("simulation exercises stationary summon and explicit Dasher text entry", as
   }
 });
 
+test("semantic gaze prefetches the focused branch before dwell commits", async () => {
+  const app = await launchDemo();
+  const window = await app.firstWindow();
+  const invoke = (channel: string, ...args: unknown[]) => window.evaluate(
+    ({ channel: target, args: values }) => (window as unknown as { __gazeIpc: { invoke: (name: string, ...items: unknown[]) => Promise<unknown> } }).__gazeIpc.invoke(target, ...values),
+    { channel, args },
+  );
+  try {
+    await expect.poll(async () => (await invoke("debug:get") as { state: string }).state).toBe("PASSIVE");
+    await invoke("session:summon");
+    await expect(window.locator(".prompt-buffer")).toBeVisible();
+    await expect(window.locator(".quadrant-target")).toHaveCount(4);
+    const card = await window.locator('[data-gaze-region="A"]').boundingBox();
+    expect(card).not.toBeNull();
+    await window.mouse.move(card!.x + card!.width / 2, card!.y + card!.height / 2);
+    await window.waitForTimeout(300);
+
+    const before = await invoke("debug:get") as { telemetry: { decoderColdLatencyMs: number[]; prefetchHits: number } };
+    expect(before.telemetry.decoderColdLatencyMs.length).toBeGreaterThanOrEqual(1);
+
+    await window.keyboard.press("1");
+    await expect.poll(async () => (await invoke("debug:get") as { telemetry: { prefetchHits: number } }).telemetry.prefetchHits).toBeGreaterThanOrEqual(1);
+    await expect(window.locator(".prompt-buffer")).toContainText("I want you to find");
+    await window.screenshot({ path: "/tmp/view-prefetch-semantic-card.png" });
+  } finally {
+    await app.close();
+  }
+});
+
 test("live startup contains no simulated surface and requires eye calibration", async () => {
   const app = await electron.launch({
     args: [`--user-data-dir=${mkdtempSync(join(tmpdir(), "view-startup-e2e-"))}`, "."], cwd: resolve(__dirname, "../.."),
@@ -161,7 +192,7 @@ test("live startup contains no simulated surface and requires eye calibration", 
   }
 });
 
-test("intent correction and unavailable executor recovery route through the UI state machine", async () => {
+test("completed intent executes directly and unavailable executor recovery returns to composition", async () => {
   const app = await launchDemo();
   const window = await app.firstWindow();
   const invoke = (channel: string, ...args: unknown[]) => window.evaluate(
@@ -173,18 +204,6 @@ test("intent correction and unavailable executor recovery route through the UI s
     await expect(window.locator(".prompt-buffer")).toBeVisible();
 
     await invoke("session:commit-hint-literal", "find a file");
-    await expect(window.locator(".center-intent")).toContainText("find a file");
-    await invoke("confirm:change");
-    await expect(window.locator(".prompt-buffer")).toBeVisible();
-
-    await invoke("debug:force-state", "ERROR_RECOVERY");
-    await invoke("recovery:choose", "choose_else");
-    await expect(window.locator(".prompt-buffer")).toBeVisible();
-    await expect.poll(async () => (await invoke("debug:get") as { state: string }).state).toBe("SEMANTIC");
-
-    await invoke("session:commit-hint-literal", "find a file");
-    await expect(window.locator(".center-intent")).toContainText("find a file");
-    await invoke("confirm:yes");
     await expect(window.locator(".recovery")).toBeVisible({ timeout: 5_000 });
     await invoke("recovery:choose", "choose_else");
     await expect(window.locator(".prompt-buffer")).toBeVisible({ timeout: 5_000 });
@@ -214,5 +233,6 @@ async function launchDemo() {
   await window.waitForLoadState("domcontentloaded");
   await expect(window).toHaveTitle("Gaze Agent");
   await expect(window.locator(".sprite")).toBeVisible();
+  await window.waitForFunction(() => document.documentElement.style.getPropertyValue("--notch-height").length > 0);
   return app;
 }

@@ -76,13 +76,22 @@ export function shelfRegions(surface: OverlaySurface, zonesCount: number = 4): P
 }
 
 export function spriteRegion(surface: OverlaySurface, notchHeight: number = 38, notchCenterX: number = surface.width / 2, notchWidth?: number): PlacedRegion {
-  const width = Math.max(58, Math.round(notchWidth ?? 0));
   const hasNotch = notchWidth != null && notchWidth > 0;
-  const height = hasNotch ? notchHeight + 62 : 58;
+  // Match the top cards' vertical tolerance and use the center gap between
+  // them. The visual sprite remains 50px wide, but the camera does not need
+  // to resolve that small target precisely before summon or interruption.
+  const width = Math.max(
+    hasNotch ? Math.round(notchWidth) + 96 : 180,
+    Math.round(surface.width * 0.32),
+  );
+  const height = Math.max(
+    hasNotch ? notchHeight + 104 : 96,
+    Math.round(surface.height * 0.32),
+  );
   return {
     id: "sprite",
     x: Math.round(notchCenterX - width / 2),
-    y: hasNotch ? 0 : Math.max(0, Math.round(notchHeight - 8)),
+    y: 0,
     width,
     height,
   };
@@ -94,14 +103,8 @@ export function promptBufferRegion(surface: OverlaySurface): PlacedRegion {
 }
 
 export function confirmRegions(surface: OverlaySurface): PlacedRegion[] {
-  const { width, height } = surface;
-  const w = Math.round(width * 0.3);
-  const h = Math.round(height * 0.16);
-  const yBottom = height - h - Math.round(height * 0.12);
-  return [
-    { id: "A", x: 0, y: Math.round(height * 0.36), width: w, height: h },
-    { id: "B", x: width - w, y: Math.round(height * 0.36), width: w, height: h },
-    { id: "C", x: 0, y: yBottom, width: w, height: h },
-    { id: "D", x: width - w, y: yBottom, width: w, height: h },
-  ];
+  // Confirmation is a decision state, not a smaller interaction mode. Reuse
+  // the semantic card geometry so gaze targets keep the same size and
+  // position across the transition.
+  return screenCorners(surface);
 }

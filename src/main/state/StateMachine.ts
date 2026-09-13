@@ -75,7 +75,7 @@ const TRANSITIONS: Partial<Record<InteractionState, Partial<Record<MachineTrigge
     selectOption: "SEMANTIC",
     more: "SEMANTIC",
     clarifyAnswer: "SEMANTIC",
-    intentReady: "INTENT_CONFIRMATION",
+    intentReady: "EXECUTING",
     openFallback: "FALLBACK_TEXT",
     back: "SEMANTIC",
     exit: "PASSIVE",
@@ -84,6 +84,7 @@ const TRANSITIONS: Partial<Record<InteractionState, Partial<Record<MachineTrigge
   },
   DECODING_ALT: {
     decodingFinished: "SEMANTIC",
+    intentReady: "EXECUTING",
     exit: "PASSIVE",
     gazeLost: "SEMANTIC_PAUSED",
     error: "ERROR_RECOVERY",
@@ -104,7 +105,7 @@ const TRANSITIONS: Partial<Record<InteractionState, Partial<Record<MachineTrigge
   },
   FALLBACK_TEXT: {
     hintSubmitted: "SEMANTIC",
-    literalCommit: "INTENT_CONFIRMATION",
+    literalCommit: "EXECUTING",
     exit: "PASSIVE",
     back: "SEMANTIC",
     gazeLost: "SEMANTIC_PAUSED",

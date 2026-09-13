@@ -25,6 +25,7 @@ export class ContextEngine {
   private capturer = new ScreenCapturer();
   private snapshot: ContextSnapshot | null = null;
   private anchor: AttentionAnchor | null = null;
+  private polling = false;
 
   constructor(screenWidth: number, screenHeight: number, screenScale: number) {
     this.windows = new ActiveWindowEngine(screenWidth, screenHeight, screenScale);
@@ -35,13 +36,25 @@ export class ContextEngine {
   }
 
   startPolling(): void {
+    if (this.polling) return;
+    this.polling = true;
     void this.executeLoop();
   }
 
+  stopPolling(): void {
+    this.polling = false;
+  }
+
   private async executeLoop(): Promise<void> {
-    while (true) {
+    while (this.polling) {
       await this.wait(ACTIVE_POLL_MS);
-      await this.refresh();
+      if (!this.polling) return;
+      try {
+        await this.refresh();
+      } catch {
+        // Context is advisory. A transient desktop API failure must not
+        // reject the background loop or interrupt calibration/live gaze.
+      }
     }
   }
 

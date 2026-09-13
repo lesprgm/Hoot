@@ -5,14 +5,13 @@ import type {
   ContextSnapshot,
   ExecutedTask,
   ExecutorEvent,
-  IntentConfirmationState,
   PromptViewState,
   RecoveryState,
   SteeringState,
   ViewMessage,
 } from "../../shared/types";
 import { InteractionStateMachine } from "./StateMachine";
-import { PromptCompletionEngine, CONFIRM_CHOICES } from "../prompt-completion/PromptCompletionEngine";
+import { PromptCompletionEngine } from "../prompt-completion/PromptCompletionEngine";
 import { SessionMetrics } from "../telemetry/SessionMetrics";
 import { TTSService } from "../tts/MacSayTTS";
 import { ContextEngine } from "../context/ContextEngine";
@@ -38,7 +37,11 @@ export function spokenSelectionFeedback(label: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .toLocaleLowerCase();
-  return spoken ? `${spoken} selected.` : "Selection accepted.";
+  return spoken ? `Okay — ${spoken}.` : "Okay.";
+}
+
+export function shouldSpeakSemanticSelection(selectionNumber: number): boolean {
+  return selectionNumber >= 2;
 }
 
 export class InteractionController {
@@ -64,6 +67,8 @@ export class InteractionController {
   private sessionGeneration = 0;
   private semanticRequestInFlight = false;
   private semanticRequestToken = 0;
+  private prefetchRequestToken = 0;
+  private semanticSelectionCount = 0;
 
   constructor(
     private broadcast: (message: ViewMessage) => void,
@@ -96,6 +101,10 @@ export class InteractionController {
           this.broadcast({ type: "audio-cue", cue: "ready" });
         },
         onIntent: (intent) => this.handleIntent(intent),
+        onOpenUrl: (url, spokenMessage) => {
+          void import("electron").then(({ shell }) => shell.openExternal(url));
+          this.speak(spokenMessage);
+        },
         onBusy: (busy) => {
           if (busy) {
             if (this.machine.transition("decodingStarted")) {
@@ -161,6 +170,10 @@ export class InteractionController {
     this.context.startPolling();
   }
 
+  stopContextPolling(): void {
+    this.context.stopPolling();
+  }
+
   setAttentionAnchor(anchor: AttentionAnchor): void {
     this.context.setAttentionAnchor(anchor);
   }
@@ -195,6 +208,7 @@ export class InteractionController {
   private async loadSession(): Promise<void> {
     this.metrics.resetSession();
     this.clarifyRejects = 0;
+    this.semanticSelectionCount = 0;
     const generation = ++this.sessionGeneration;
     try {
       // The root is fixed and context-independent, so publish it before any
@@ -219,14 +233,14 @@ export class InteractionController {
 
   async selectOption(quadrant: "A" | "B" | "C" | "D"): Promise<void> {
     if (!this.machine.can("selectOption")) return;
+    this.prefetchRequestToken += 1;
     const requestToken = this.beginSemanticRequest();
     if (requestToken === null) return;
     const selectedOption = this.lastPromptView?.options.find((option) => option.quadrant === quadrant);
     if (selectedOption) {
-      this.cue("selection");
-      if (selectedOption.type !== "do_that" && selectedOption.type !== "full_prompt") {
-        this.speak(spokenSelectionFeedback(selectedOption.label));
-      }
+      this.semanticSelectionCount += 1;
+      const isTerminalSelection = selectedOption.type === "do_that" || selectedOption.type === "full_prompt";
+      this.acknowledgeSelection(selectedOption.label, !isTerminalSelection && shouldSpeakSemanticSelection(this.semanticSelectionCount));
     }
     try {
       await this.sessionPreparation;
@@ -239,8 +253,23 @@ export class InteractionController {
     }
   }
 
+  async prefetchOption(quadrant: "A" | "B" | "C" | "D"): Promise<void> {
+    if (this.machine.state !== "SEMANTIC" || this.semanticRequestInFlight) return;
+    const prefetchToken = ++this.prefetchRequestToken;
+    const generation = this.sessionGeneration;
+    try {
+      await this.sessionPreparation;
+      if (prefetchToken !== this.prefetchRequestToken || generation !== this.sessionGeneration || this.machine.state !== "SEMANTIC" || this.semanticRequestInFlight) return;
+      await this.engine.prefetchOption(quadrant);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[decoder] ${JSON.stringify({ event: "prefetch_preparation_failed", message })}`);
+    }
+  }
+
   async more(): Promise<void> {
     if (!this.machine.can("more")) return;
+    this.prefetchRequestToken += 1;
     const requestToken = this.beginSemanticRequest();
     if (requestToken === null) return;
     this.acknowledgeSelection("More choices");
@@ -265,6 +294,7 @@ export class InteractionController {
 
   async back(): Promise<void> {
     if (!this.machine.can("back") || this.semanticRequestInFlight) return;
+    this.prefetchRequestToken += 1;
     this.acknowledgeSelection("Back");
     try {
       await this.engine.back();
@@ -284,6 +314,11 @@ export class InteractionController {
   async updateHint(text: string): Promise<void> {
     const requestToken = this.beginSemanticRequest();
     if (requestToken === null) return;
+    if (!text.trim()) {
+      this.finishSemanticRequest(requestToken);
+      return;
+    }
+    this.acknowledgeSelection("Use as hint");
     if (this.machine.can("selectOption")) this.machine.transition("selectOption");
     try {
       await this.sessionPreparation;
@@ -298,6 +333,7 @@ export class InteractionController {
 
   async clearHint(): Promise<void> {
     if (this.semanticRequestInFlight || this.machine.state === "DECODING_ALT") return;
+    this.acknowledgeSelection("Clear");
     const view = this.engine.clearHint();
     void view;
   }
@@ -305,6 +341,8 @@ export class InteractionController {
   async acceptHintCandidate(id: string): Promise<void> {
     const requestToken = this.beginSemanticRequest();
     if (requestToken === null) return;
+    const candidate = this.lastPromptView?.options.find((option) => option.id === id);
+    this.acknowledgeSelection(candidate?.label ?? "Suggestion");
     if (this.machine.can("selectOption")) this.machine.transition("selectOption");
     try {
       await this.engine.acceptHintCandidate(id);
@@ -317,6 +355,8 @@ export class InteractionController {
 
   async commitHintLiteral(text: string): Promise<void> {
     if (this.semanticRequestInFlight || this.machine.state === "DECODING_ALT") return;
+    if (!text.trim()) return;
+    this.acknowledgeSelection("Use full request");
     await this.engine.commitHintLiteral(text);
   }
 
@@ -338,15 +378,15 @@ export class InteractionController {
 
   async exitSession(): Promise<void> {
     this.sessionGeneration += 1;
+    this.prefetchRequestToken += 1;
     this.semanticRequestToken += 1;
     this.semanticRequestInFlight = false;
     this.sessionPreparation = Promise.resolve();
     this.machine.transition("exit");
     this.engine.exit();
     this.pendingIntent = null;
-    this.tts.stop();
-    this.broadcast({ type: "speech-stop" });
-    this.cue("selection");
+    this.semanticSelectionCount = 0;
+    this.acknowledgeSelection("Exit");
     this.broadcast({ type: "state", state: this.machine.state });
   }
 
@@ -360,16 +400,13 @@ export class InteractionController {
       this.machine.transition("intentReady");
     }
     this.metrics.markIntentReady();
-    const state: IntentConfirmationState = {
-      sessionId: this.engine.sessionId ?? randomUUID(),
-      intentText: intent,
-      speakText: intent,
-      canBack: this.machine.state === "INTENT_CONFIRMATION" && this.engine.peerCount > 0,
-      choices: CONFIRM_CHOICES,
-    };
-    this.broadcast({ type: "intent-confirmation", view: state });
-    this.cue("ready");
-    this.speak(`You want me to ${intent.replace(/^I want you to\s*/i, "").replace(/\.$/, "")}. Is that right?`);
+    if (this.machine.state !== "EXECUTING") {
+      this.fail(new Error("The completed intent could not enter execution."));
+      return;
+    }
+    this.broadcast({ type: "executing", status: { taskId: "pending", statusText: "Starting…", stepIndex: 0, stepCount: 1 } });
+    void this.startExecution(intent);
+    this.pendingIntent = null;
   }
 
   private openFallback(): void {
@@ -396,7 +433,7 @@ export class InteractionController {
 
   async confirmChange(): Promise<void> {
     if (this.machine.state !== "INTENT_CONFIRMATION") return;
-    this.cue("selection");
+    this.acknowledgeSelection("Change it");
     this.pendingIntent = null;
     this.machine.transition("confirmChange");
     const view = await this.engine.back();
@@ -407,18 +444,17 @@ export class InteractionController {
 
   async confirmRead(): Promise<void> {
     if (this.machine.state !== "INTENT_CONFIRMATION") return;
-    this.cue("selection");
+    this.acknowledgeSelection("Read / Repeat");
     this.machine.transition("confirmRead");
     if (this.pendingIntent) this.speak(this.pendingIntent);
   }
 
   async confirmCancel(): Promise<void> {
-    this.cue("selection");
+    if (this.machine.state !== "INTENT_CONFIRMATION") return;
+    this.acknowledgeSelection("Cancel");
     this.machine.transition("confirmCancel");
     this.engine.exit();
     this.pendingIntent = null;
-    this.tts.stop();
-    this.broadcast({ type: "speech-stop" });
     this.broadcast({ type: "state", state: "PASSIVE" });
     this.speak("Cancelled.");
   }
@@ -550,11 +586,11 @@ export class InteractionController {
 
   async steer(choice: string): Promise<void> {
     if (this.machine.state !== "EXECUTION_INTERRUPTED") return;
-    this.cue("selection");
+    const spokenChoice = choice === "continue" ? "Continue" : choice === "stop" ? "Stop" : choice === "go_back" ? "Go back" : "Change something";
+    this.acknowledgeSelection(spokenChoice);
     const resolver = this.steeringResolver;
     this.steeringResolver = null;
     if (choice === "continue") {
-      this.speak("Continue selected.");
       this.machine.transition("steerContinue");
       this.broadcast({ type: "state", state: "EXECUTING" });
       this.broadcast({ type: "executing", status: { taskId: this.pendingTask?.taskId ?? "task", statusText: "Continuing from the paused action…", stepIndex: 0, stepCount: 1 } });
@@ -590,7 +626,8 @@ export class InteractionController {
 
   async consequentialChoice(choice: string, readAgain = false): Promise<void> {
     if (this.machine.state !== "CONSEQUENTIAL_CONFIRMATION") return;
-    this.cue("selection");
+    const spokenChoice = choice === "approve" ? "Approve" : choice === "cancel" ? "Cancel" : choice === "read" ? "Read or explain" : "Change";
+    this.acknowledgeSelection(spokenChoice);
     if (choice === "approve") {
       this.speak("Approved.");
       const resolver = this.takeConsequentialResolver();
@@ -636,9 +673,8 @@ export class InteractionController {
   }
 
   async recovery(choice: string): Promise<void> {
-    this.cue("selection");
+    this.acknowledgeSelection(choice === "retry" ? "Try again" : choice === "go_back" ? "Go back" : choice === "choose_else" ? "Choose something else" : "Stop");
     if (choice === "retry") {
-      this.speak("Try again selected.");
       if (!this.machine.transition("recoveryRetry")) return;
       this.broadcast({ type: "state", state: "AGENT_LOADING" });
       await this.loadSession();
@@ -661,6 +697,7 @@ export class InteractionController {
     this.executor = null;
     this.engine.exit();
     this.broadcast({ type: "state", state: "PASSIVE" });
+    this.speak("Stopped.");
   }
 
   private releaseCorrectionRouting(): void {
@@ -698,9 +735,15 @@ export class InteractionController {
     this.broadcast({ type: "audio-cue", cue });
   }
 
-  private acknowledgeSelection(label: string): void {
+  private acknowledgeSelection(label: string, speakFeedback = true): void {
+    this.stopSpeech();
     this.cue("selection");
-    this.speak(spokenSelectionFeedback(label));
+    if (speakFeedback) this.speak(spokenSelectionFeedback(label));
+  }
+
+  private stopSpeech(): void {
+    this.tts.stop();
+    this.broadcast({ type: "speech-stop" });
   }
 
   notice(text: string): void {

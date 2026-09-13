@@ -269,6 +269,11 @@ export interface AppSettings {
   decoderModel: string;
   executorModel: string;
   ttsModel: string;
+  ttsStability: number;
+  ttsSimilarityBoost: number;
+  ttsStyle: number;
+  ttsUseSpeakerBoost: boolean;
+  ttsSpeed: number;
 }
 
 export interface AppConfig {
@@ -276,7 +281,7 @@ export interface AppConfig {
   ttsProvider: "elevenlabs" | "macos" | "mute";
   elevenLabsVoiceId: string;
   executorProvider: "openai";
-  decoderProvider: "openai" | "gemini" | "fixture";
+  decoderProvider: "openai" | "gemini" | "openrouter" | "fixture";
   executionMode: "live";
   simulateGaze: boolean;
   forceCalibration: boolean;
@@ -285,6 +290,7 @@ export interface AppConfig {
   settings: AppSettings;
   hasOpenAiKey: boolean;
   hasGeminiKey: boolean;
+  hasOpenRouterKey: boolean;
   hasElevenLabsKey: boolean;
   platform: string;
   displayGeometry?: {

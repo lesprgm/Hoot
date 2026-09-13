@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { InteractionStateMachine } from "../../src/main/state/StateMachine";
 
 describe("InteractionStateMachine", () => {
-  it("follows the summon → semantic → confirmation → executing → passive path", () => {
+  it("follows the summon → semantic → executing → passive path", () => {
     const m = new InteractionStateMachine();
     expect(m.state).toBe("BOOT");
     expect(m.transition("setupRequired")).toBe(true);
@@ -18,9 +18,6 @@ describe("InteractionStateMachine", () => {
     expect(m.transition("selectOption")).toBe(true);
     expect(m.state).toBe("SEMANTIC");
     expect(m.transition("intentReady")).toBe(true);
-    expect(m.state).toBe("INTENT_CONFIRMATION");
-
-    expect(m.transition("confirmYes")).toBe(true);
     expect(m.state).toBe("EXECUTING");
     expect(m.transition("consequentialPending")).toBe(true);
     expect(m.state).toBe("CONSEQUENTIAL_CONFIRMATION");

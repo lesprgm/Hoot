@@ -6,12 +6,19 @@ export interface CalibrationViewport {
   scale: number;
 }
 
+// macOS can change the web contents height when the menu bar, safe-area
+// chrome, or focus state changes. That small vertical drift does not change
+// normalized gaze coordinates and must not invalidate a saved calibration.
+const MAX_CHROME_HEIGHT_DRIFT_PX = 48;
+
 export function currentCalibrationViewport(): CalibrationViewport {
   return { width: window.innerWidth, height: window.innerHeight, scale: window.devicePixelRatio };
 }
 
 export function sameCalibrationViewport(a: CalibrationViewport, b: CalibrationViewport): boolean {
-  return a.width === b.width && a.height === b.height && a.scale === b.scale;
+  return a.width === b.width
+    && Math.abs(a.height - b.height) <= MAX_CHROME_HEIGHT_DRIFT_PX
+    && a.scale === b.scale;
 }
 
 /** Check held-out targets; the validation frames never train the tracker. */

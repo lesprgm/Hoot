@@ -30,6 +30,9 @@ export interface GeminiCreateParams {
 }
 
 export interface GeminiInteraction {
+  status?: string;
+  model?: string;
+  errors?: unknown[];
   output_text?: string;
   steps?: unknown[];
 }
@@ -165,6 +168,11 @@ export class GeminiFlashLiteProvider implements DecoderProvider {
         // Semantic continuation is a low-reasoning, latency-sensitive task.
         // Gemini 3.5 Flash otherwise defaults to medium thinking.
         thinking_level: "minimal",
+        // The schema contains six required fields per candidate and the
+        // provider validates the complete JSON document locally. 512 tokens
+        // truncates normal candidate sets, leaving an incomplete JSON string
+        // that the parser cannot recover. Keep enough room for one response;
+        // minimal thinking still keeps this request latency-sensitive.
         max_output_tokens: 2048,
       },
       response_format: {
@@ -173,9 +181,23 @@ export class GeminiFlashLiteProvider implements DecoderProvider {
         schema,
       },
     });
-    const output = extractOutputText(interaction);
-    if (!output) throw new Error("empty interaction output_text");
-    return parseJsonObject(output);
+    if (interaction.status && interaction.status !== "completed") {
+      const suffix = interaction.errors?.length ? `: ${JSON.stringify(interaction.errors).slice(0, 240)}` : "";
+      throw new Error(`interaction status ${interaction.status}${suffix}`);
+    }
+    const outputs = extractOutputTexts(interaction);
+    if (outputs.length === 0) throw new Error("empty interaction output_text");
+    let lastError: unknown = null;
+    for (const output of outputs) {
+      try {
+        return parseJsonObject(output);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    const lengths = outputs.map((output) => output.length).join(",");
+    const reason = lastError instanceof Error ? `: ${lastError.message}` : "";
+    throw new Error(`unparseable interaction output (textBlocks=${outputs.length}, lengths=${lengths})${reason}`);
   }
 
   private wrapError(label: string, error: unknown): Error {
@@ -205,9 +227,10 @@ function stripArrayBounds(value: unknown): unknown {
   return result;
 }
 
-function extractOutputText(interaction: GeminiInteraction): string | null {
+function extractOutputTexts(interaction: GeminiInteraction): string[] {
+  const outputs: string[] = [];
   if (typeof interaction.output_text === "string" && interaction.output_text.trim()) {
-    return interaction.output_text;
+    outputs.push(interaction.output_text);
   }
 
   for (const step of interaction.steps ?? []) {
@@ -217,10 +240,10 @@ function extractOutputText(interaction: GeminiInteraction): string | null {
     for (const block of content) {
       if (!block || typeof block !== "object") continue;
       const text = (block as { text?: unknown }).text;
-      if (typeof text === "string" && text.trim()) return text;
+      if (typeof text === "string" && text.trim()) outputs.push(text);
     }
   }
-  return null;
+  return outputs;
 }
 
 function parseJsonObject(text: string): unknown {

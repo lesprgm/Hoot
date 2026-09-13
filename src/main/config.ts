@@ -50,9 +50,17 @@ function envBool(set: Record<string, string>, key: string, fallback: boolean): b
   return raw === "true" || raw === "1" || raw === "yes";
 }
 
+function hasEnvValue(set: Record<string, string>, key: string): boolean {
+  return envKey(set, key, "").trim().length > 0;
+}
+
 const env = loadEnvFile();
 const decoderProvider = envKey(env, "DECODER_PROVIDER", "openai") as AppConfig["decoderProvider"];
-const defaultDecoderModel = decoderProvider === "gemini" ? "gemini-3.5-flash-lite" : "gpt-5.6-luna";
+const defaultDecoderModel = decoderProvider === "gemini"
+  ? "gemini-3.5-flash-lite"
+  : decoderProvider === "openrouter"
+    ? "deepseek/deepseek-v4-flash-0731"
+    : "gpt-5.6-luna";
 
 export const config: AppConfig = {
   gazeProvider: (envKey(env, "GAZE_PROVIDER", "webeyetrack") as AppConfig["gazeProvider"]) ?? "webeyetrack",
@@ -66,7 +74,7 @@ export const config: AppConfig = {
   allowUnverifiedGaze: envBool(env, "ALLOW_UNVERIFIED_GAZE", false),
   debugHud: envBool(env, "DEBUG_HUD", false),
   settings: {
-    gazeDwellMs: envInt(env, "GAZE_DWELL_MS", 550),
+    gazeDwellMs: envInt(env, "GAZE_DWELL_MS", 1500),
     agentSummonDwellMs: envInt(env, "AGENT_SUMMON_DWELL_MS", 900),
     noneDwellMs: envInt(env, "NONE_DWELL_MS", 700),
     cancelDwellMs: envInt(env, "CANCEL_DWELL_MS", 900),
@@ -82,13 +90,22 @@ export const config: AppConfig = {
     decoderModel: envKey(env, "DECODER_MODEL", defaultDecoderModel),
     executorModel: envKey(env, "EXECUTOR_MODEL", "gpt-6-astra"),
     ttsModel: envKey(env, "ELEVENLABS_MODEL", "eleven_flash_v2_5"),
+    // This profile keeps Flash speech expressive without trading away its
+    // low-latency behavior. Each value remains environment-tunable for a
+    // particular voice recording.
+    ttsStability: envFloat(env, "ELEVENLABS_STABILITY", 0.46),
+    ttsSimilarityBoost: envFloat(env, "ELEVENLABS_SIMILARITY_BOOST", 0.80),
+    ttsStyle: envFloat(env, "ELEVENLABS_STYLE", 0.05),
+    ttsUseSpeakerBoost: envBool(env, "ELEVENLABS_USE_SPEAKER_BOOST", false),
+    ttsSpeed: envFloat(env, "ELEVENLABS_SPEED", 1.0),
   },
-  hasOpenAiKey: Boolean(envKey(env, "OPENAI_API_KEY", "")),
-  hasGeminiKey: Boolean(envKey(env, "GEMINI_API_KEY", "")),
-  hasElevenLabsKey: Boolean(envKey(env, "ELEVENLABS_API_KEY", "")),
+  hasOpenAiKey: hasEnvValue(env, "OPENAI_API_KEY"),
+  hasGeminiKey: hasEnvValue(env, "GEMINI_API_KEY"),
+  hasOpenRouterKey: hasEnvValue(env, "OPENROUTER_API_KEY"),
+  hasElevenLabsKey: hasEnvValue(env, "ELEVENLABS_API_KEY"),
   platform: String(process.platform),
 };
 
 export function apiKey(name: string): string {
-  return process.env[name] ?? env[name] ?? "";
+  return (process.env[name] ?? env[name] ?? "").trim();
 }

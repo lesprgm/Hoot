@@ -86,6 +86,19 @@ describe("GeminiFlashLiteProvider", () => {
     expect(response.normalizedPrompt).toBe("I want you to…");
   });
 
+  it("uses a later model-output step when the convenience text is not JSON", async () => {
+    const fixtureResponse = new FixtureDecoderProvider().generate(inputWithImage());
+    const { client } = fakeClient({
+      output_text: "A thought that is not JSON",
+      steps: [{ type: "model_output", content: [{ type: "text", text: JSON.stringify(fixtureResponse) }] }],
+    });
+    const provider = new GeminiFlashLiteProvider("gemini-3.5-flash", { key: "test-key", client });
+
+    const response = await provider.generateCandidates(inputWithImage());
+
+    expect(response.candidates.length).toBeGreaterThanOrEqual(4);
+  });
+
   it("uses the structured clarification seam without a repair request", async () => {
     const fixture = new FixtureDecoderProvider();
     const clarification = await fixture.generateClarification(inputWithImage());
@@ -112,5 +125,15 @@ describe("GeminiFlashLiteProvider", () => {
     const { client } = fakeClient({ output_text: JSON.stringify({ mode: "predict" }) });
     const invalid = new GeminiFlashLiteProvider("gemini-3.5-flash", { key: "test-key", client });
     await expect(invalid.generateCandidates(inputWithImage())).rejects.toThrow("decoder schema violation");
+  });
+
+  it("reports an incomplete interaction before attempting to parse truncated JSON", async () => {
+    const { client } = fakeClient({
+      status: "incomplete",
+      output_text: '{"mode":"predict"',
+    });
+    const provider = new GeminiFlashLiteProvider("gemini-3.5-flash-lite", { key: "test-key", client });
+
+    await expect(provider.generateCandidates(inputWithImage())).rejects.toThrow("interaction status incomplete");
   });
 });

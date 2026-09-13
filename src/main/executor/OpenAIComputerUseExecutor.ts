@@ -35,6 +35,7 @@ export class OpenAIComputerUseExecutor implements ExecutorProvider {
       "Use the existing signed-in applications and browser sessions.",
       "Before a final external or irreversible action (send, post, submit, delete, purchase, payment, booking, or account change), return a computer safety check so the host can request explicit confirmation.",
       "Do not report success until the visible desktop confirms the requested result.",
+      "When no more computer actions are needed, return exactly one completion line: SUCCESS: <brief result> only when the visible desktop confirms the request, or FAILED: <brief reason> when it does not. Never use SUCCESS for an unverified result.",
       `Confirmed request: ${task.naturalLanguagePrompt}`,
     ].join("\n");
 
@@ -61,6 +62,13 @@ export class OpenAIComputerUseExecutor implements ExecutorProvider {
         previousResponseId = response.id;
         if (!(await this.handleInterrupt(task, callbacks, "Paused before the next desktop action."))) return;
 
+        // The official Computer Use loop requires a completed response before
+        // executing any returned action batch. A failed or incomplete response
+        // can contain partial output that must not reach the desktop runtime.
+        if (response.status !== "completed") {
+          throw new Error(`OpenAI Computer Use stopped with response status: ${response.status}`);
+        }
+
         const calls = (response.output ?? []).filter((item): item is ResponseComputerToolCall => item.type === "computer_call");
         for (const item of response.output ?? []) {
           if (item.type === "message") {
@@ -69,13 +77,14 @@ export class OpenAIComputerUseExecutor implements ExecutorProvider {
           }
         }
         if (calls.length === 0) {
-          if (response.status !== "completed") {
-            throw new Error(`OpenAI Computer Use stopped with response status: ${response.status}`);
-          }
           const summary = response.output_text.trim();
           if (!summary) throw new Error("OpenAI Computer Use returned no action and no completion summary.");
-          callbacks.onEvent({ type: "completed", taskId: task.taskId, text: summary });
-          callbacks.onComplete(task, summary);
+          const completion = parseCompletionSummary(summary);
+          if (completion.status === "failed") {
+            throw new Error(`OpenAI Computer Use failed: ${completion.summary}`);
+          }
+          callbacks.onEvent({ type: "completed", taskId: task.taskId, text: completion.summary });
+          callbacks.onComplete(task, completion.summary);
           return;
         }
 
@@ -108,6 +117,7 @@ export class OpenAIComputerUseExecutor implements ExecutorProvider {
 
           for (const action of actions) {
             if (!(await this.handleInterrupt(task, callbacks, `Paused before: ${actionLabel(action.type)}`))) return;
+            logComputerAction(action);
             await this.performLocal(action);
             callbacks.onEvent({ type: "step", taskId: task.taskId, text: actionLabel(action.type), stepIndex: turn + 1, stepCount: 80 });
           }
@@ -189,7 +199,7 @@ export class OpenAIComputerUseExecutor implements ExecutorProvider {
       try {
         await operation();
       } finally {
-        if (mapped.length > 0) await nut.keyboard.releaseKey(...[...mapped].reverse());
+        if (mapped.length > 0) await nut.keyboard.releaseKey(...mapped);
       }
     };
     switch (action.type) {
@@ -223,14 +233,16 @@ export class OpenAIComputerUseExecutor implements ExecutorProvider {
         const keys = (action.keys ?? []).map((key) => toNutKey(nut.Key, key)).filter((key): key is number => key !== null);
         if (keys.length === 0) throw new Error(`Unsupported key combination: ${(action.keys ?? []).join("+")}`);
         await nut.keyboard.pressKey(...keys);
-        await nut.keyboard.releaseKey(...[...keys].reverse());
+        await nut.keyboard.releaseKey(...keys);
         break;
       }
       case "type":
         await nut.keyboard.type(action.text ?? "");
         break;
       case "wait":
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        // Match the official desktop action-handler recipe: a wait gives the
+        // operating system time to settle before the next screenshot.
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
         break;
       case "screenshot":
         // Every computer call returns a fresh screenshot below.
@@ -246,6 +258,31 @@ export class OpenAIComputerUseExecutor implements ExecutorProvider {
     this.interruptFlag = true;
     this.running = false;
   }
+}
+
+export function parseCompletionSummary(raw: string): { status: "success" | "failed"; summary: string } {
+  const match = raw.trim().match(/^(SUCCESS|FAILED)\s*:\s*([\s\S]+)$/i);
+  if (!match) {
+    throw new Error("OpenAI Computer Use returned an untyped completion summary; expected SUCCESS: or FAILED:.");
+  }
+  const summary = match[2].trim();
+  if (!summary) throw new Error("OpenAI Computer Use returned an empty completion summary.");
+  return { status: match[1].toLowerCase() === "success" ? "success" : "failed", summary };
+}
+
+function logComputerAction(action: ComputerAction): void {
+  const details: Record<string, unknown> = { type: action.type };
+  if ("keys" in action && action.keys) details.keys = action.keys;
+  if ("x" in action && typeof action.x === "number") details.x = action.x;
+  if ("y" in action && typeof action.y === "number") details.y = action.y;
+  if ("button" in action && action.button) details.button = action.button;
+  if (action.type === "type") details.textLength = action.text?.length ?? 0;
+  if (action.type === "scroll") {
+    details.scrollX = action.scroll_x;
+    details.scrollY = action.scroll_y;
+  }
+  if (action.type === "drag") details.pathLength = action.path.length;
+  console.log(`[computer-use] ${JSON.stringify(details)}`);
 }
 
 function toNutButton(buttons: { LEFT: number; MIDDLE: number; RIGHT: number }, raw: string): number {

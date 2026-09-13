@@ -26,6 +26,7 @@ export interface RendererApi {
   enterDemoMode(): Promise<void>;
   quitApp(): Promise<void>;
   summon(): Promise<void>;
+  prefetchOption(quadrant: "A" | "B" | "C" | "D"): Promise<void>;
   selectOption(quadrant: "A" | "B" | "C" | "D"): Promise<void>;
   more(): Promise<void>;
   back(): Promise<void>;
@@ -63,6 +64,7 @@ export const api: RendererApi = {
   enterDemoMode: () => invoke(IPC.enterDemoMode),
   quitApp: () => invoke(IPC.quitApp),
   summon: () => invoke(IPC.summon),
+  prefetchOption: (q) => invoke(IPC.prefetchOption, q),
   selectOption: (q) => invoke(IPC.selectOption, q),
   more: () => invoke(IPC.more),
   back: () => invoke(IPC.back),
@@ -138,15 +140,20 @@ export function initialViewState(): ViewState {
 export function applyMessage(state: ViewState, message: ViewMessage): ViewState {
   switch (message.type) {
     case "state":
+      // Keep older confirmation messages atomic for protocol compatibility.
+      if (message.state === "INTENT_CONFIRMATION" && !state.confirmation && state.prompt) return state;
+      // Direct intent execution sends its payload immediately after the state
+      // transition. Keep the semantic view mounted until that payload arrives.
+      if (message.state === "EXECUTING" && !state.executing && state.prompt) return state;
       return { ...state, interactionState: message.state };
     case "prompt":
-      return { ...state, prompt: message.view, hint: null, confirmation: null, consequential: null, steering: null, recovery: null, editor: null };
+      return { ...state, prompt: message.view, hint: null, confirmation: null, executing: null, consequential: null, steering: null, recovery: null, editor: null };
     case "hint":
-      return { ...state, prompt: message.view, confirmation: null, consequential: null, steering: null, recovery: null, editor: null };
+      return { ...state, prompt: message.view, confirmation: null, executing: null, consequential: null, steering: null, recovery: null, editor: null };
     case "intent-confirmation":
-      return { ...state, confirmation: message.view, prompt: null, hint: null, consequential: null, steering: null, recovery: null, editor: null };
+      return { ...state, interactionState: "INTENT_CONFIRMATION", confirmation: message.view, prompt: null, hint: null, consequential: null, steering: null, recovery: null, editor: null };
     case "executing":
-      return { ...state, executing: message.status, prompt: null, hint: null, confirmation: null, consequential: null, steering: null, recovery: null, editor: null };
+      return { ...state, interactionState: "EXECUTING", executing: message.status, prompt: null, hint: null, confirmation: null, consequential: null, steering: null, recovery: null, editor: null };
     case "consequential":
       return { ...state, consequential: message.view, executing: { statusText: "Waiting for your decision…", stepIndex: 0, stepCount: 1 } };
     case "steering":

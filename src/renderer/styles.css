@@ -105,10 +105,11 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 /* ---------- sprite ---------- */
 .perceived-notch {
   position: fixed;
-  top: 0;
+  /* Overlap the hardware notch slightly so its rounded edge cannot reveal a seam. */
+  top: -2px;
   left: var(--notch-left-x);
   width: var(--notch-width);
-  height: calc(var(--notch-height, 32px) + 62px);
+  height: calc(var(--notch-height, 32px) + 64px);
   border-radius: 0 0 16px 16px;
   background: linear-gradient(180deg, #030304 0%, #050506 72%, #090a0d 100%);
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.025), 0 3px 10px rgba(0, 0, 0, 0.28);

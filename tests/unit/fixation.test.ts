@@ -68,6 +68,34 @@ describe("DwellSelector", () => {
     expect(commits).toEqual(["sprite"]);
   });
 
+  it("freezes focus progress across a brief invalid camera sample", () => {
+    const commits: string[] = [];
+    const ds = new DwellSelector((c) => commits.push(c.regionId), 180, 0.7, 180);
+    const regions = [region("A", 300)];
+    const gaze = sample(0.15, 0.15, 0);
+    ds.update(regions, gaze, 0);
+    ds.update(regions, gaze, 100);
+    ds.update(regions, null, 120);
+
+    expect(ds.progress(regions, null, 160)?.progress01).toBeCloseTo(0.4);
+
+    ds.update(regions, gaze, 200);
+    expect(ds.progress(regions, gaze, 200)?.progress01).toBeCloseTo(0.4);
+    expect(commits).toEqual([]);
+    ds.update(regions, gaze, 380);
+    expect(commits).toEqual(["A"]);
+  });
+
+  it("clears focus after a sustained invalid camera interval", () => {
+    const ds = new DwellSelector(() => {}, 180, 0.7, 180);
+    const regions = [region("A", 300)];
+    ds.update(regions, sample(0.15, 0.15, 0), 0);
+    ds.update(regions, null, 100);
+    ds.update(regions, null, 300);
+
+    expect(ds.progress(regions, null, 300)).toBeNull();
+  });
+
   it("resets progress when gaze exits before commit", () => {
     const commits: string[] = [];
     const ds = new DwellSelector((c) => commits.push(c.regionId), 180, 0.7);
@@ -90,6 +118,44 @@ describe("DwellSelector", () => {
     ds.update(regions, sample(0.15, 0.15, 350), 400);
     ds.update(regions, sample(0.15, 0.15, 400), 500);
     expect(commits.filter((c) => c === "A")).toHaveLength(1);
+  });
+
+  it("rearms after looking at empty space before returning to the same region", () => {
+    const commits: string[] = [];
+    const ds = new DwellSelector((c) => commits.push(c.regionId), 180, 0.7);
+    const regions = [region("A", 300)];
+    ds.update(regions, sample(0.15, 0.15, 0), 0);
+    ds.update(regions, sample(0.15, 0.15, 300), 300);
+    ds.update(regions, sample(0.9, 0.9, 350), 350);
+    ds.update(regions, sample(0.9, 0.9, 550), 550);
+    ds.update(regions, sample(0.15, 0.15, 600), 600);
+    ds.update(regions, sample(0.15, 0.15, 900), 900);
+
+    expect(commits).toEqual(["A", "A"]);
+  });
+
+  it("rearms across a sustained invalid gaze gap", () => {
+    const commits: string[] = [];
+    const ds = new DwellSelector((c) => commits.push(c.regionId), 180, 0.7);
+    const regions = [region("A", 300)];
+    ds.update(regions, sample(0.15, 0.15, 0), 0);
+    ds.update(regions, sample(0.15, 0.15, 300), 300);
+    ds.update(regions, null, 350);
+    ds.update(regions, null, 550);
+    ds.update(regions, sample(0.15, 0.15, 600), 600);
+    ds.update(regions, sample(0.15, 0.15, 900), 900);
+
+    expect(commits).toEqual(["A", "A"]);
+  });
+
+  it("does not carry completed progress into a new screen with the same region id", () => {
+    const ds = new DwellSelector(() => {}, 180, 0.7);
+    const regions = [region("A", 300)];
+    const gaze = sample(0.15, 0.15, 0);
+    ds.update(regions, gaze, 0);
+    ds.update(regions, gaze, 300);
+
+    expect(ds.progress(regions, gaze, 320)).toBeNull();
   });
 
   it("requires the majority of samples to be inside the region (ratio gate)", () => {
@@ -115,6 +181,54 @@ describe("DwellSelector", () => {
     ds.update(regions, sample(0.15, 0.15, 150), 240);
     ds.update(regions, sample(0.9, 0.9, 200), 300);
     ds.update(regions, sample(0.15, 0.15, 250), 400);
+    expect(commits).not.toContain("A");
+  });
+
+  it("commits after three separated looks within the look window", () => {
+    const commits: string[] = [];
+    const ds = new DwellSelector((c) => commits.push(c.regionId), 180, 0.7);
+    const regions = [region("A", 5_000)];
+    const look = (start: number) => {
+      ds.update(regions, sample(0.15, 0.15, start), start);
+      ds.update(regions, sample(0.15, 0.15, start + 70), start + 70);
+      ds.update(regions, sample(0.9, 0.9, start + 150), start + 150);
+    };
+
+    look(0);
+    look(250);
+    look(500);
+
+    expect(commits).toEqual(["A"]);
+  });
+
+  it("accumulates brief successive lower-card gaze bursts", () => {
+    const commits: string[] = [];
+    const ds = new DwellSelector((c) => commits.push(c.regionId), 180, 0.7);
+    const regions = [region("C", 2_500)];
+
+    for (const start of [0, 230, 460]) {
+      ds.update(regions, sample(0.15, 0.15, start), start);
+      ds.update(regions, sample(0.15, 0.15, start + 65), start + 65);
+      ds.update(regions, sample(0.15, 0.8, start + 135), start + 135);
+    }
+
+    expect(commits).toEqual(["C"]);
+  });
+
+  it("does not count looks after the look window expires", () => {
+    const commits: string[] = [];
+    const ds = new DwellSelector((c) => commits.push(c.regionId), 180, 0.7);
+    const regions = [region("A", 5_000)];
+    const look = (start: number) => {
+      ds.update(regions, sample(0.15, 0.15, start), start);
+      ds.update(regions, sample(0.15, 0.15, start + 150), start + 150);
+      ds.update(regions, sample(0.9, 0.9, start + 270), start + 270);
+    };
+
+    look(0);
+    look(400);
+    look(2_800);
+
     expect(commits).not.toContain("A");
   });
 });
