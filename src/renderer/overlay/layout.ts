@@ -78,7 +78,7 @@ export function shelfRegions(surface: OverlaySurface, zonesCount: number = 4): P
 export function spriteRegion(surface: OverlaySurface, notchHeight: number = 38, notchCenterX: number = surface.width / 2, notchWidth?: number): PlacedRegion {
   const hasNotch = notchWidth != null && notchWidth > 0;
   // Match the top cards' vertical tolerance and use the center gap between
-  // them. The visual sprite remains 50px wide, but the camera does not need
+  // them. The visual sprite remains compact, but the camera does not need
   // to resolve that small target precisely before summon or interruption.
   const width = Math.max(
     hasNotch ? Math.round(notchWidth) + 96 : 180,

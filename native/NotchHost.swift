@@ -18,7 +18,7 @@ private final class NotchSurfaceView: NSView {
     }
     var progress: CGFloat?
     var focused = false
-    var extensionHeight: CGFloat = 84
+    var extensionHeight: CGFloat = 44
     var hardwareNotchHeight: CGFloat = 32
 
     override init(frame frameRect: NSRect) {
@@ -64,11 +64,12 @@ private final class NotchSurfaceView: NSView {
         drawSurface()
 
         let image = isWorking ? workingImage : idleImage
+        let spriteSize = min(28, max(20, hardwareNotchHeight - 4))
         let spriteRect = NSRect(
-            x: bounds.midX - 29,
-            y: max(12, extensionHeight - 64),
-            width: 58,
-            height: 58
+            x: bounds.midX - spriteSize / 2,
+            y: max(4, (extensionHeight - spriteSize) / 2),
+            width: spriteSize,
+            height: spriteSize
         )
 
         drawGlow(in: spriteRect)
@@ -166,7 +167,8 @@ private final class NotchSurfaceView: NSView {
 
     private func drawProgress(in spriteRect: NSRect) {
         guard focused || progress != nil else { return }
-        let ringRect = spriteRect.insetBy(dx: -7, dy: -7)
+        let ringPadding = max(1, (hardwareNotchHeight - spriteRect.width) / 2)
+        let ringRect = spriteRect.insetBy(dx: -ringPadding, dy: -ringPadding)
         let track = NSBezierPath(ovalIn: ringRect)
         NSColor.white.withAlphaComponent(0.18).setStroke()
         track.lineWidth = 3
@@ -263,7 +265,7 @@ private final class NotchHostController: NSObject {
     private func reposition() {
         guard let screen = primaryScreen(), let panel, let surface else { return }
         let geometry = notchGeometry(for: screen)
-        let extensionHeight: CGFloat = geometry.hasHardwareNotch ? 84 : 68
+        let extensionHeight: CGFloat = geometry.hasHardwareNotch ? 44 : 52
         let panelWidth = geometry.hasHardwareNotch ? geometry.frame.width : 280
         let frame = NSRect(
             x: geometry.frame.midX - panelWidth / 2,

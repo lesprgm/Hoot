@@ -135,29 +135,29 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 }
 .sprite {
   position: fixed;
-  top: calc(var(--notch-height, 38px) - 8px);
+  top: calc(var(--notch-height, 38px) - 2px);
   left: var(--notch-center-x, 50%);
   transform: translateX(-50%);
-  width: 50px;
-  height: 58px;
+  width: 28px;
+  height: 32px;
   z-index: 10;
   animation: sprite-bob 2.8s ease-in-out infinite;
 }
 .sprite-has-notch {
   /* The sprite's feet align with the lower ledge of the notch pocket. */
-  top: calc(var(--notch-height, 38px) + 6px);
+  top: calc(var(--notch-height, 38px) + 4px);
   animation: sprite-bob-perched 2.8s ease-in-out infinite;
 }
-.sprite-ring { position: absolute; top: 5px; left: -4px; width: 58px; height: 58px; }
+.sprite-ring { position: absolute; top: -2px; left: -2px; width: 32px; height: 32px; }
 .sprite-has-notch .sprite-ring { top: -2px; z-index: 1; }
 .sprite-art {
   position: absolute;
   left: 0;
   top: 0;
-  width: 50px;
-  height: 72px;
+  width: 28px;
+  height: 32px;
   background-repeat: no-repeat;
-  background-size: 400px 50px;
+  background-size: 224px 28px;
   filter: drop-shadow(0 5px 5px rgba(5, 10, 25, 0.48));
   z-index: 2;
 }
@@ -176,26 +176,26 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .sprite-state-paused .sprite-art { opacity: 0.55; }
 @keyframes owl-idle-frames {
   0%, 26% { background-position: 0 8px; }
-  30%, 36% { background-position: -50px 8px; }
+  30%, 36% { background-position: -28px 8px; }
   40%, 50% { background-position: 0 8px; }
-  54%, 60% { background-position: -100px 8px; }
+  54%, 60% { background-position: -56px 8px; }
   64%, 70% { background-position: 0 8px; }
-  73%, 76% { background-position: -150px 8px; }
-  79%, 82% { background-position: -200px 8px; }
-  85%, 88% { background-position: -250px 8px; }
-  91%, 95% { background-position: -300px 8px; }
-  98% { background-position: -350px 8px; }
+  73%, 76% { background-position: -84px 8px; }
+  79%, 82% { background-position: -112px 8px; }
+  85%, 88% { background-position: -140px 8px; }
+  91%, 95% { background-position: -168px 8px; }
+  98% { background-position: -196px 8px; }
   100% { background-position: 0 8px; }
 }
 @keyframes owl-working-frames {
   0%, 10% { background-position: 0 8px; }
-  14%, 23% { background-position: -50px 8px; }
-  27%, 36% { background-position: -100px 8px; }
-  40%, 51% { background-position: -150px 8px; }
-  55%, 65% { background-position: -200px 8px; }
-  69%, 79% { background-position: -250px 8px; }
-  83%, 91% { background-position: -300px 8px; }
-  95%, 98% { background-position: -350px 8px; }
+  14%, 23% { background-position: -28px 8px; }
+  27%, 36% { background-position: -56px 8px; }
+  40%, 51% { background-position: -84px 8px; }
+  55%, 65% { background-position: -112px 8px; }
+  69%, 79% { background-position: -140px 8px; }
+  83%, 91% { background-position: -168px 8px; }
+  95%, 98% { background-position: -196px 8px; }
   100% { background-position: 0 8px; }
 }
 @keyframes sprite-bob { 0%, 100% { transform: translateX(-50%) translateY(0); } 50% { transform: translateX(-50%) translateY(-3px); } }
