@@ -1,6 +1,6 @@
 # View architecture
 
-View is an Electron application with a privileged main process and a browser renderer. The renderer owns gaze acquisition, smoothing, dwell hit testing, the overlay, Dasher, and fixture pages. The main process owns active-window discovery, screen capture, permissions, text-to-speech, stateful session orchestration, and computer execution. The preload bridge exposes the allow-listed IPC operations in `src/shared/ipc.ts`.
+View is an Electron application with a privileged main process, a browser renderer, and a small macOS AppKit helper. The renderer owns gaze acquisition, smoothing, dwell hit testing, the overlay, Dasher, and fixture pages. The main process owns active-window discovery, screen capture, permissions, text-to-speech, stateful session orchestration, computer execution, and the helper's line-delimited visual IPC. The AppKit helper owns the notch-adjacent pixels and reads the primary display's safe-area geometry. The preload bridge exposes the allow-listed IPC operations in `src/shared/ipc.ts`.
 
 The user-visible component and overlay boundary is summarized in the [README](./README.md#what-runs-on-screen). Fixture pages are standalone test inputs and are not mounted by the product overlay.
 
@@ -8,10 +8,16 @@ The current build has no iPhone Mirroring integration. Active-window discovery a
 
 ## Runtime flow
 
-1. `src/main/index.ts` creates `InteractionController`, starts `ContextEngine` polling, and registers IPC handlers.
-2. `src/renderer/app/App.tsx` starts the configured gaze provider, smooths samples, and converts dwell commits into bridge calls.
+1. `src/main/index.ts` starts `native/ViewNotchHost` when the compiled helper exists, creates `InteractionController`, starts `ContextEngine` polling, and registers IPC handlers.
+2. `src/renderer/app/App.tsx` starts the configured gaze provider, smooths samples, converts dwell commits into bridge calls, and sends bucketed sprite progress to the helper through the main process.
 3. `InteractionController` drives `StateMachine`, `PromptCompletionEngine`, TTS, and the live `OpenAIComputerUseExecutor`.
 4. Main-process events are broadcast as `ViewMessage` values. `applyMessage` reduces those messages into renderer `ViewState`.
+
+## Native notch surface
+
+`native/NotchHost.swift` creates a nonactivating, click-through `NSPanel` at the `.statusBar` level. The panel uses `.canJoinAllSpaces`, `.fullScreenAuxiliary`, and `.stationary` collection behavior. The helper computes the primary display's camera-gap frame from `safeAreaInsets.top`, `auxiliaryTopLeftArea`, and `auxiliaryTopRightArea`, then positions one black surface so its top edge meets the physical display edge and its lower extension contains the owl.
+
+The main process starts the helper with the generated sprite directory and writes JSON lines containing the sprite state, focus state, progress, and visibility. The helper animates the bundled idle or working sheet and draws the progress ring and status glow. The renderer retains a zero-opacity DOM proxy for the same gaze target, so gaze hit testing remains in the browser coordinate system while the native panel owns the visible pixels. If the helper cannot be compiled or started, the renderer uses its existing CSS notch and sprite fallback.
 
 ## Navigation modes
 
@@ -37,4 +43,4 @@ Research sources for those adapters are the [Gemini model catalog](https://ai.go
 
 ## Validation
 
-Run `npm run typecheck`, `npm test`, `npm run build`, and `npm run test:e2e`. E2E requires the packaged Electron runtime and validates summon/Dasher, article/feed navigation, and correction/recovery. Live gaze, live Gemini/OpenAI decoding, and live OpenAI execution additionally require macOS permissions and credentials.
+Run `npm run typecheck`, `npm test`, `npm run build`, and `npm run test:e2e`. On macOS, `npm run build` also compiles the AppKit notch helper. E2E requires the packaged Electron runtime and validates summon/Dasher, article/feed navigation, and correction/recovery. Live gaze, live Gemini/OpenAI decoding, and live OpenAI execution additionally require macOS permissions and credentials.

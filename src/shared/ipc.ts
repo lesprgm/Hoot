@@ -28,6 +28,7 @@ export const IPC = {
   recovery: "recovery:choose",
   gazeAnchor: "gaze:anchor",
   gazeSampleTelemetry: "gaze:sample-tel",
+  notchVisual: "notch:visual",
   navigationScroll: "navigation:scroll",
   getDebugInfo: "debug:get",
   toggleHud: "debug:toggle-hud",

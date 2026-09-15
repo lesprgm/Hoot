@@ -104,6 +104,7 @@ export const config: AppConfig = {
   hasOpenRouterKey: hasEnvValue(env, "OPENROUTER_API_KEY"),
   hasElevenLabsKey: hasEnvValue(env, "ELEVENLABS_API_KEY"),
   platform: String(process.platform),
+  nativeNotchHostAvailable: false,
 };
 
 export function apiKey(name: string): string {

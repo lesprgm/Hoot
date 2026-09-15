@@ -47,6 +47,7 @@ export interface RendererApi {
   recovery(choice: string): Promise<void>;
   setAnchor(xNorm: number, yNorm: number, windowXNorm: number | null, windowYNorm: number | null, insideActiveWindow: boolean): Promise<void>;
   gazeStatus(valid: boolean): Promise<void>;
+  notchVisual(sprite: SpriteState, progress: number | null, focused: boolean): Promise<void>;
   navigationScroll(direction: "next" | "previous", deltaPx: number): Promise<void>;
   getDebugInfo(): Promise<DebugInfo | null>;
   toggleHud(): Promise<void>;
@@ -85,6 +86,7 @@ export const api: RendererApi = {
   recovery: (c) => invoke(IPC.recovery, c),
   setAnchor: (x, y, wx, wy, inside) => invoke(IPC.gazeAnchor, { xNorm: x, yNorm: y, windowXNorm: wx, windowYNorm: wy, insideActiveWindow: inside }),
   gazeStatus: (valid) => invoke(IPC.gazeSampleTelemetry, valid),
+  notchVisual: (sprite, progress, focused) => invoke(IPC.notchVisual, { sprite, progress, focused }),
   navigationScroll: (direction, deltaPx) => invoke(IPC.navigationScroll, { direction, deltaPx }),
   getDebugInfo: () => invoke(IPC.getDebugInfo),
   toggleHud: () => invoke(IPC.toggleHud),

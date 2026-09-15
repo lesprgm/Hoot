@@ -24,7 +24,7 @@ The current build does not implement Apple iPhone Mirroring integration. View do
 | Gaze smoother and dwell selector | Renderer | Stabilize gaze and commit continuous dwell selections | Progress feedback |
 | Overlay layout | Renderer | Places cards from actual active-window geometry | Yes |
 | Dasher | Renderer iframe | Provides explicit arbitrary-text entry | Only when requested |
-| Owl and perceived notch | Renderer | Provide the stable summon and interrupt target | Always while View runs |
+| Owl and perceived notch | Native helper + renderer proxy | The AppKit panel owns visible pixels; the renderer keeps the zero-opacity gaze hit proxy and CSS fallback | Always while View runs |
 
 ## Development fixtures
 
@@ -60,7 +60,7 @@ The overlay uses a floating window level. It must never use the `screen-saver` l
 
 AppKit supplies the safe-area top inset and the left and right edges of the camera gap. The perceived notch uses that exact width. It extends behind the current owl artwork and ends two pixels below the owl's visible frame.
 
-The notch and owl share one gaze hit region. The perceived notch extends 62 px below the measured top inset so its black background covers the ring and owl art with a lower overlap margin. On a display without a camera gap, the owl uses a compact top-center hit region and no artificial notch is rendered.
+The notch and owl share one gaze hit region. On macOS, `native/NotchHost.swift` owns the visible panel and aligns its top edge with the primary display's physical top edge using AppKit safe-area geometry. The renderer keeps a zero-opacity DOM proxy so the gaze selector continues to use the same padded region. If the helper is unavailable, the renderer's CSS fallback extends 62 px below the measured top inset so its black background covers the ring and owl art with a lower overlap margin. On a display without a camera gap, the helper uses a compact top-center surface and the fallback renders no artificial notch.
 
 ## Resolved overlay defects
 

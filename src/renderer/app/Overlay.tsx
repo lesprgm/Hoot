@@ -3,10 +3,10 @@ import type { DisplayOption } from "../../shared/types";
 import type { PlacedRegion } from "../overlay/layout";
 import { SPRITE_STATE_LABEL, QUADRANT_IDS } from "./traits";
 
-export function Sprite({ state, progress, hasNotch }: { state: string; progress: number | null; hasNotch: boolean }): React.ReactElement {
+export function Sprite({ state, progress, hasNotch, nativeHost = false }: { state: string; progress: number | null; hasNotch: boolean; nativeHost?: boolean }): React.ReactElement {
   const isWorking = state === "computer_use_running" || state === "thinking" || state === "speaking";
   return (
-    <div className={`sprite sprite-state-${state}${hasNotch ? " sprite-has-notch" : " sprite-no-notch"}`}>
+    <div className={`sprite sprite-state-${state}${hasNotch ? " sprite-has-notch" : " sprite-no-notch"}${nativeHost ? " native-notch-proxy" : ""}`}>
       <div className="sprite-ring">
         {progress !== null ? (
           <svg viewBox="0 0 100 100" className="ring-svg">

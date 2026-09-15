@@ -293,6 +293,7 @@ export interface AppConfig {
   hasOpenRouterKey: boolean;
   hasElevenLabsKey: boolean;
   platform: string;
+  nativeNotchHostAvailable: boolean;
   displayGeometry?: {
     width: number;
     height: number;

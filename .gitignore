@@ -44,6 +44,9 @@ blob-report/
 src/renderer/public/sprites/
 vendor/owl-sprites/*.jpg
 
+# Native notch host build output
+native/ViewNotchHost
+
 # Editor and IDE metadata
 .idea/
 .vscode/

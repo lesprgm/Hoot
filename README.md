@@ -15,6 +15,7 @@ View currently provides:
 - Live desktop execution through OpenAI Computer Use on the existing macOS desktop.
 - Reading and vertical-feed navigation based on edge dwell.
 - A deterministic simulated-gaze mode for development and demonstrations.
+- On macOS, a native AppKit helper owns the notch-adjacent black surface and owl pixels. Electron keeps a zero-opacity DOM proxy for the same gaze hit region and uses its CSS sprite only when the helper is unavailable.
 
 View currently does not provide:
 
@@ -31,6 +32,7 @@ The application targets one primary macOS display. It discovers the active macOS
 View owns a transparent overlay with these surfaces:
 
 - A perceived notch and owl sprite provide the passive summon target and the execution-interrupt target.
+- The native `NotchHost` panel uses the primary display's AppKit safe-area geometry, a status-bar window level, and all-spaces collection behavior so the surface stays attached to the physical camera gap across desktop spaces.
 - Four large semantic cards appear at screen corners for root choices and around a smaller active window for refinements.
 - A bottom shelf exposes Back, More/None, Spell/Hint, and Exit.
 - Confirmation, consequential-action, interruption, recovery, calibration, and text-entry panels appear only when their state requires them.
@@ -81,10 +83,16 @@ flowchart LR
 
     O --> I --> C
     C -->|"view events"| I
+    M -->|"notch visual IPC"| N
     C --> X --> Mac["Existing macOS desktop"]
     P --> LLM["OpenAI / Gemini / OpenRouter / fixture"]
     C --> T --> I
     I --> O
+
+    subgraph N["Native macOS helper"]
+        H["AppKit notch panel + owl renderer"]
+    end
+    N --> Mac
 ```
 
 Runtime ownership follows the process boundary:
@@ -94,6 +102,7 @@ Runtime ownership follows the process boundary:
 | Renderer | Camera providers, calibration UI, gaze smoothing, dwell hit testing, React overlay, layout, navigation, audio playback, and Dasher iframe integration |
 | Preload bridge | Allow-listed commands and typed `ViewMessage` events between renderer and main process |
 | Main process | Active-window discovery, screen capture, prompt completion, interaction state, TTS requests, telemetry, permissions, and live computer execution |
+| Native AppKit helper | Primary-display notch geometry, notch-adjacent surface, owl sprite animation, dwell progress ring, and status glows; it receives visual updates from the main process and does not receive pointer input |
 
 ## Interaction state machine
 
@@ -304,6 +313,8 @@ npm run start     # Preview the production build
 npm run setup     # Set up optional local assets when required
 ```
 
+On macOS, `npm run dev` and `npm run build` also compile `native/NotchHost.swift` into the ignored `native/ViewNotchHost` executable. The Electron process starts that helper when the executable exists. Other platforms skip the Swift build and use the renderer sprite surface.
+
 ### Live camera and desktop agent
 
 ```sh
@@ -398,8 +409,9 @@ Unit tests cover state transitions, gaze smoothing and calibration math, prompt 
 | `src/main/executor/` | OpenAI Computer Use adapter, action execution, screenshot exchange, interruption, and consequential-action gating |
 | `src/renderer/` | React overlay, gaze providers, calibration UI, smoothing, dwell selection, layout, navigation, and Dasher integration |
 | `src/renderer/public/` | Bundled WebEyeTrack assets, model files, sprite assets, Dasher, and test fixtures |
+| `native/` | AppKit notch host source and the locally compiled helper executable |
 | `src/shared/` | IPC names and shared TypeScript contracts |
 | `tests/` | Unit and Electron/Playwright end-to-end tests |
-| `scripts/` | Optional asset setup, sprite generation, and WebEyeTrack verification |
+| `scripts/` | Native helper build, optional asset setup, sprite generation, and WebEyeTrack verification |
 
 Third-party notices for bundled browser and model assets are in [THIRD_PARTY.md](./THIRD_PARTY.md). The technical process and provider deep dive is in [ARCHITECTURE.md](./ARCHITECTURE.md). The live component contract is in [COMPONENTS.md](./COMPONENTS.md).

@@ -1,4 +1,6 @@
 import { app, BrowserWindow, ipcMain, screen, globalShortcut, net, protocol } from "electron";
+import { existsSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { config } from "./config";
@@ -11,6 +13,8 @@ import { readMacSafeAreaGeometry } from "./display/SafeArea";
 const isMac = process.platform === "darwin";
 let mainWindow: BrowserWindow | null = null;
 let controller: InteractionController | null = null;
+let notchHost: ChildProcess | null = null;
+let nativeNotchHostAvailable = false;
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -40,7 +44,81 @@ function registerRendererProtocol(): void {
   });
 }
 
+function findNativeNotchHost(): string | null {
+  const candidates = [
+    join(process.cwd(), "native", "ViewNotchHost"),
+    join(app.getAppPath(), "native", "ViewNotchHost"),
+    join(process.resourcesPath, "native", "ViewNotchHost"),
+    join(process.resourcesPath, "app.asar.unpacked", "native", "ViewNotchHost"),
+  ];
+  return candidates.find(existsSync) ?? null;
+}
+
+function findSpriteDirectory(): string | null {
+  const candidates = [
+    join(process.cwd(), "src", "renderer", "public", "sprites"),
+    join(app.getAppPath(), "src", "renderer", "public", "sprites"),
+    join(app.getAppPath(), "out", "renderer", "sprites"),
+    join(process.resourcesPath, "app.asar.unpacked", "renderer", "sprites"),
+  ];
+  return candidates.find(existsSync) ?? null;
+}
+
+function startNativeNotchHost(): void {
+  if (!isMac) return;
+  const executable = findNativeNotchHost();
+  if (!executable) {
+    console.warn("Native notch host is unavailable; using the renderer fallback.");
+    return;
+  }
+
+  const spriteDirectory = findSpriteDirectory();
+  const child = spawn(executable, spriteDirectory ? [spriteDirectory] : [], {
+    cwd: app.getAppPath(),
+    stdio: ["pipe", "ignore", "ignore"],
+  });
+  notchHost = child;
+  nativeNotchHostAvailable = true;
+  child.once("error", (error) => {
+    console.error("Native notch host failed", error);
+    if (notchHost === child) {
+      notchHost = null;
+      nativeNotchHostAvailable = false;
+    }
+  });
+  child.once("exit", () => {
+    if (notchHost === child) {
+      notchHost = null;
+      nativeNotchHostAvailable = false;
+    }
+  });
+}
+
+function sendNotchVisual(update: { sprite: string; progress?: number | null; focused?: boolean; visible?: boolean }): void {
+  const input = notchHost?.stdin;
+  if (!input || input.destroyed || input.writableEnded) return;
+  try {
+    input.write(`${JSON.stringify(update)}\n`);
+  } catch (error) {
+    console.error("Could not update native notch host", error);
+  }
+}
+
+function stopNativeNotchHost(): void {
+  const child = notchHost;
+  notchHost = null;
+  nativeNotchHostAvailable = false;
+  if (!child) return;
+  child.stdin?.end();
+  setTimeout(() => {
+    if (!child.killed) child.kill();
+  }, 500);
+}
+
 function broadcast(message: ViewMessage): void {
+  if (message.type === "sprite") {
+    sendNotchVisual({ sprite: message.sprite, visible: true });
+  }
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(IPC.viewUpdate, message);
   }
@@ -128,6 +206,7 @@ function registerIpc(): void {
 
   ipcMain.handle(IPC.getConfig, async (): Promise<AppConfig> => ({
     ...config,
+    nativeNotchHostAvailable,
     displayGeometry: await displayGeometry(),
   }));
 
@@ -275,6 +354,10 @@ function registerIpc(): void {
     ctrl()?.onGazeConfidence(valid);
   });
 
+  ipcMain.handle(IPC.notchVisual, async (_e, update: { sprite: string; progress: number | null; focused: boolean }) => {
+    sendNotchVisual(update);
+  });
+
   ipcMain.handle(IPC.navigationScroll, async (_e, payload: { direction: "next" | "previous"; deltaPx: number }) => {
     const controller = ctrl();
     if (!controller) return;
@@ -345,6 +428,7 @@ function registerIpc(): void {
 
 async function bootstrap(): Promise<void> {
   await app.whenReady();
+  startNativeNotchHost();
   registerRendererProtocol();
   const geometry = await displayGeometry();
   controller = new InteractionController(broadcast, config.elevenLabsVoiceId, {
@@ -418,4 +502,5 @@ app.whenReady().then(bootstrap).catch((err) => {
 app.on("will-quit", () => {
   controller?.stopContextPolling();
   globalShortcut.unregisterAll();
+  stopNativeNotchHost();
 });

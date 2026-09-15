@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { AppConfig, AudioCue, GazeSample, TelemetrySummary } from "../../shared/types";
+import type { AppConfig, AudioCue, GazeSample, SpriteState, TelemetrySummary } from "../../shared/types";
 import { api, applyMessage, initialViewState, subscribeView, type ViewState } from "../bridge";
 import { SimulatedGazeProvider } from "../gaze/SimulatedGazeProvider";
 import { WebEyeTrackProvider, RealEyeProvider, hasMatchingCalibrationViewport } from "../gaze/WebEyeTrackProvider";
@@ -141,6 +141,7 @@ export function App(): React.ReactElement {
   const navigationRef = useRef<NavigationController | null>(null);
   const focusedPrefetchKeyRef = useRef<string | null>(null);
   const requestedPrefetchKeyRef = useRef<string | null>(null);
+  const nativeNotchVisualKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     navigationRef.current = new NavigationController(({ direction, deltaPx }) => {
@@ -240,6 +241,18 @@ export function App(): React.ReactElement {
         const nextProgress: Record<string, number> = {};
         if (pr) nextProgress[pr.regionId] = pr.progress01;
         const nextFocused = pr?.regionId ?? null;
+        if (cfg.nativeNotchHostAvailable) {
+          const nativeFocused = nextFocused === "sprite";
+          const nativeProgress = nativeFocused && pr?.regionId === "sprite"
+            ? Math.round(pr.progress01 * 20) / 20
+            : null;
+          const nativeSprite: SpriteState = nativeFocused ? "dwelling" : viewRef.current.sprite;
+          const nativeKey = `${nativeSprite}|${nativeFocused}|${nativeProgress ?? "none"}`;
+          if (nativeKey !== nativeNotchVisualKeyRef.current) {
+            nativeNotchVisualKeyRef.current = nativeKey;
+            void api.notchVisual(nativeSprite, nativeProgress, nativeFocused);
+          }
+        }
         const currentPrompt = viewRef.current.prompt;
         const promptKey = currentPrompt
           ? `${currentPrompt.sessionId}|${currentPrompt.displayPrompt}|${currentPrompt.options.map((option) => option.id).join(",")}`
@@ -577,6 +590,7 @@ export function App(): React.ReactElement {
   const showSemantic = SEMANTIC_STATES.has(st) && view.prompt != null;
   const showHintPanel = view.prompt?.mode === "hint" || st === "FALLBACK_TEXT";
   const layout = semanticLayout(surfaceOf(), view);
+  const nativeNotchHost = view.config?.nativeNotchHostAvailable === true;
   const hasMeasuredNotch = view.config?.displayGeometry?.notchLeftX != null
     && view.config.displayGeometry.notchRightX != null;
   const spriteState = focused === "sprite" ? "dwelling" : view.sprite;
@@ -584,13 +598,13 @@ export function App(): React.ReactElement {
   return (
     <div className="stage">
       <video id="gaze-camera" className="gaze-camera" autoPlay muted playsInline />
-      {hasMeasuredNotch ? <div className="perceived-notch" aria-hidden="true" /> : null}
+      {hasMeasuredNotch ? <div className={`perceived-notch${nativeNotchHost ? " native-notch-proxy" : ""}`} aria-hidden="true" /> : null}
       {debugOpen ? <div className="topbar">
         <button className="topbtn" onClick={() => setDebugOpen(!debugOpen)} title="Debug HUD">HUD</button>
         <div className="title">Gaze → Agent</div>
         <button className="topbtn" onClick={() => setTelemetryOpen(!telemetryOpen)} title="Task results">📊</button>
       </div> : null}
-      <Sprite state={spriteState} progress={progress.sprite ?? null} hasNotch={hasMeasuredNotch} />
+      <Sprite state={spriteState} progress={progress.sprite ?? null} hasNotch={hasMeasuredNotch} nativeHost={nativeNotchHost} />
       {navigationMode ? <div className="navigation-status">{navigationMode === "reading" ? "READING MODE" : "FEED MODE"} · R/F to switch · X to exit</div> : null}
 
       {showSemantic ? (

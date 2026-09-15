@@ -116,6 +116,10 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   pointer-events: none;
   z-index: 9;
 }
+.native-notch-proxy {
+  /* The AppKit helper owns the pixels; this DOM copy preserves the gaze hit box. */
+  opacity: 0;
+}
 .perceived-notch::after {
   content: "";
   position: absolute;
