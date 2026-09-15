@@ -8,13 +8,47 @@ private final class NotchPanel: NSPanel {
 }
 
 private final class NotchSurfaceView: NSView {
+    private struct FrameStep {
+        let frame: Int
+        let duration: TimeInterval
+    }
+
+    private let idleTimeline = [
+        FrameStep(frame: 0, duration: 3.2),
+        FrameStep(frame: 3, duration: 0.14),
+        FrameStep(frame: 0, duration: 4.0),
+        FrameStep(frame: 1, duration: 0.25),
+        FrameStep(frame: 2, duration: 0.25),
+        FrameStep(frame: 0, duration: 3.8),
+        FrameStep(frame: 4, duration: 0.28),
+        FrameStep(frame: 5, duration: 0.28),
+        FrameStep(frame: 6, duration: 0.22),
+        FrameStep(frame: 7, duration: 0.22),
+        FrameStep(frame: 0, duration: 4.5),
+    ]
+    private let workingTimeline = [
+        FrameStep(frame: 0, duration: 1.2),
+        FrameStep(frame: 1, duration: 0.25),
+        FrameStep(frame: 2, duration: 0.25),
+        FrameStep(frame: 0, duration: 0.8),
+        FrameStep(frame: 3, duration: 0.9),
+        FrameStep(frame: 4, duration: 1.0),
+        FrameStep(frame: 5, duration: 1.3),
+        FrameStep(frame: 6, duration: 0.6),
+        FrameStep(frame: 7, duration: 0.3),
+        FrameStep(frame: 0, duration: 1.5),
+    ]
     private var idleImage: NSImage?
     private var workingImage: NSImage?
     private var frameIndex = 0
+    private var timelineIndex = 0
     private var animationTimer: Timer?
 
     var spriteState = "idle" {
-        didSet { setNeedsDisplay(bounds) }
+        didSet {
+            guard spriteState != oldValue else { return }
+            restartAnimation()
+        }
     }
     var progress: CGFloat?
     var focused = false
@@ -25,11 +59,7 @@ private final class NotchSurfaceView: NSView {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.isOpaque = false
-        animationTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            frameIndex = (frameIndex + 1) % 8
-            setNeedsDisplay(bounds)
-        }
+        restartAnimation()
     }
 
     required init?(coder: NSCoder) {
@@ -83,6 +113,31 @@ private final class NotchSurfaceView: NSView {
 
     private var isWorking: Bool {
         spriteState == "thinking" || spriteState == "speaking" || spriteState == "computer_use_running"
+    }
+
+    private var activeTimeline: [FrameStep] {
+        isWorking ? workingTimeline : idleTimeline
+    }
+
+    private func restartAnimation() {
+        animationTimer?.invalidate()
+        timelineIndex = 0
+        let first = activeTimeline[0]
+        frameIndex = first.frame
+        setNeedsDisplay(bounds)
+        scheduleNextFrame(after: first.duration)
+    }
+
+    private func scheduleNextFrame(after duration: TimeInterval) {
+        animationTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            let timeline = activeTimeline
+            timelineIndex = (timelineIndex + 1) % timeline.count
+            let step = timeline[timelineIndex]
+            frameIndex = step.frame
+            setNeedsDisplay(bounds)
+            scheduleNextFrame(after: step.duration)
+        }
     }
 
     private func drawSurface() {

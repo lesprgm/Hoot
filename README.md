@@ -151,7 +151,7 @@ The main process sends a compact `sprite` state in a `ViewMessage`. The renderer
 | `paused` | Reserved paused cue. | Not currently emitted as a normal controller sprite event. |
 | `hidden` | Reserved hidden cue. | Not currently emitted as a normal controller sprite event. |
 
-The artwork currently uses an idle sheet for non-working states and a working sheet for `thinking`, `speaking`, and `computer_use_running`. The exact sprite contract is defined in `src/shared/types.ts`; visual assets and generation scripts live under `src/renderer/` and `scripts/`.
+The artwork currently uses an idle sheet for non-working states and a working sheet for `thinking`, `speaking`, and `computer_use_running`. The idle timeline lasts about 17 seconds and spends most of that time on the neutral frame, with brief blink, glance, and movement clusters. The working timeline lasts about 8 seconds and holds the thought-bubble frames long enough to read. The exact sprite contract is defined in `src/shared/types.ts`; visual assets and generation scripts live under `src/renderer/` and `scripts/`.
 
 ## Gaze model, training, and calibration
 

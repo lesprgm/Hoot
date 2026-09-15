@@ -57,7 +57,7 @@ test("simulation exercises stationary summon and explicit Dasher text entry", as
         frameDuration: getComputedStyle(art ?? document.body).animationDuration,
       };
     });
-    expect(spriteAssets).toEqual({ idleAvailable: true, workingAvailable: true, frameAnimation: "owl-idle-frames", frameDuration: "7.2s" });
+    expect(spriteAssets).toEqual({ idleAvailable: true, workingAvailable: true, frameAnimation: "owl-idle-frames", frameDuration: "17.1s" });
 
     const geometry = await window.evaluate(() => (globalThis as unknown as { __gazeIpc: { invoke: (channel: string) => Promise<{ displayGeometry?: { topInset: number; notchLeftX: number | null; notchRightX: number | null } }> } }).__gazeIpc.invoke("app:get-config"));
     if (geometry.displayGeometry?.notchLeftX != null && geometry.displayGeometry.notchRightX != null) {

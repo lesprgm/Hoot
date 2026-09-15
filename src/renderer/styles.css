@@ -161,8 +161,8 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   filter: drop-shadow(0 5px 5px rgba(5, 10, 25, 0.48));
   z-index: 2;
 }
-.sprite-art-idle { background-image: url("/sprites/owl-idle.png"); animation: owl-idle-frames 7.2s step-end infinite; }
-.sprite-art-working { background-image: url("/sprites/owl-working.png"); animation: owl-working-frames 2.4s step-end infinite; }
+.sprite-art-idle { background-image: url("/sprites/owl-idle.png"); animation: owl-idle-frames 17.1s step-end infinite; }
+.sprite-art-working { background-image: url("/sprites/owl-working.png"); animation: owl-working-frames 8.1s step-end infinite; }
 .sprite-state-dwelling,
 .sprite-state-summoned,
 .sprite-state-interrupted { animation: sprite-kick 180ms cubic-bezier(.2, .9, .25, 1), sprite-bob 2.8s 180ms ease-in-out infinite; }
@@ -175,28 +175,29 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .sprite-state-error .sprite-art { filter: drop-shadow(0 5px 7px rgba(240, 80, 80, 0.8)); }
 .sprite-state-paused .sprite-art { opacity: 0.55; }
 @keyframes owl-idle-frames {
-  0%, 26% { background-position: 0 8px; }
-  30%, 36% { background-position: -28px 8px; }
-  40%, 50% { background-position: 0 8px; }
-  54%, 60% { background-position: -56px 8px; }
-  64%, 70% { background-position: 0 8px; }
-  73%, 76% { background-position: -84px 8px; }
-  79%, 82% { background-position: -112px 8px; }
-  85%, 88% { background-position: -140px 8px; }
-  91%, 95% { background-position: -168px 8px; }
-  98% { background-position: -196px 8px; }
-  100% { background-position: 0 8px; }
+  0%, 18.7% { background-position: 0 8px; }
+  18.8%, 19.5% { background-position: -84px 8px; }
+  19.6%, 42.9% { background-position: 0 8px; }
+  43%, 44.3% { background-position: -28px 8px; }
+  44.4%, 45.8% { background-position: -56px 8px; }
+  45.9%, 68.1% { background-position: 0 8px; }
+  68.2%, 69.7% { background-position: -112px 8px; }
+  69.8%, 71.3% { background-position: -140px 8px; }
+  71.4%, 72.6% { background-position: -168px 8px; }
+  72.7%, 73.9% { background-position: -196px 8px; }
+  74%, 100% { background-position: 0 8px; }
 }
 @keyframes owl-working-frames {
-  0%, 10% { background-position: 0 8px; }
-  14%, 23% { background-position: -28px 8px; }
-  27%, 36% { background-position: -56px 8px; }
-  40%, 51% { background-position: -84px 8px; }
-  55%, 65% { background-position: -112px 8px; }
-  69%, 79% { background-position: -140px 8px; }
-  83%, 91% { background-position: -168px 8px; }
-  95%, 98% { background-position: -196px 8px; }
-  100% { background-position: 0 8px; }
+  0%, 14.7% { background-position: 0 8px; }
+  14.8%, 17.8% { background-position: -28px 8px; }
+  17.9%, 20.9% { background-position: -56px 8px; }
+  21%, 30.8% { background-position: 0 8px; }
+  30.9%, 41.9% { background-position: -84px 8px; }
+  42%, 54.2% { background-position: -112px 8px; }
+  54.3%, 70.3% { background-position: -140px 8px; }
+  70.4%, 77.7% { background-position: -168px 8px; }
+  77.8%, 81.4% { background-position: -196px 8px; }
+  81.5%, 100% { background-position: 0 8px; }
 }
 @keyframes sprite-bob { 0%, 100% { transform: translateX(-50%) translateY(0); } 50% { transform: translateX(-50%) translateY(-3px); } }
 @keyframes sprite-bob-perched { 0%, 100% { transform: translateX(-50%) translateY(0); } 50% { transform: translateX(-50%) translateY(-1px); } }
