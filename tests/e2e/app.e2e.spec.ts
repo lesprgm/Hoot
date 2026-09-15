@@ -63,8 +63,8 @@ test("simulation exercises stationary summon and explicit Dasher text entry", as
     if (geometry.displayGeometry?.notchLeftX != null && geometry.displayGeometry.notchRightX != null) {
       const notch = await window.locator(".perceived-notch").boundingBox();
       expect(notch).not.toBeNull();
-      expect(notch!.x).toBeCloseTo(geometry.displayGeometry.notchLeftX, 0);
-      expect(notch!.width).toBeCloseTo(geometry.displayGeometry.notchRightX - geometry.displayGeometry.notchLeftX, 0);
+      expect(notch!.x).toBeCloseTo(geometry.displayGeometry.notchLeftX - 8, 0);
+      expect(notch!.width).toBeCloseTo(geometry.displayGeometry.notchRightX - geometry.displayGeometry.notchLeftX + 16, 0);
       expect(notch!.y).toBeCloseTo(-2, 0);
       expect(notch!.height).toBeCloseTo(geometry.displayGeometry.topInset + 64, 0);
       expect(notch!.y + notch!.height).toBeCloseTo(geometry.displayGeometry.topInset + 62, 0);
