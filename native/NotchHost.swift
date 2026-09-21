@@ -268,6 +268,9 @@ private final class NotchHostController: NSObject {
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = true
+        // Keep the native surface eligible for full-display recordings. Astra
+        // excludes this helper by process ID when recording mode is enabled.
+        panel.sharingType = .readWrite
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.contentView = surface

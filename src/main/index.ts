@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { config } from "./config";
 import { IPC } from "../shared/ipc";
 import type { AppConfig, ViewMessage } from "../shared/types";
+import { isSelectionEnvelope } from "../shared/decisions";
 import { InteractionController } from "./state/InteractionController";
 import { checkPermissions, probeCamera } from "./permissions";
 import { readMacSafeAreaGeometry } from "./display/SafeArea";
@@ -54,6 +55,16 @@ function findNativeNotchHost(): string | null {
   return candidates.find(existsSync) ?? null;
 }
 
+function findNativeScreenCaptureHost(): string | null {
+  const candidates = [
+    join(process.cwd(), "native", "ViewScreenCaptureHost"),
+    join(app.getAppPath(), "native", "ViewScreenCaptureHost"),
+    join(process.resourcesPath, "native", "ViewScreenCaptureHost"),
+    join(process.resourcesPath, "app.asar.unpacked", "native", "ViewScreenCaptureHost"),
+  ];
+  return candidates.find(existsSync) ?? null;
+}
+
 function findSpriteDirectory(): string | null {
   const candidates = [
     join(process.cwd(), "src", "renderer", "public", "sprites"),
@@ -79,6 +90,16 @@ function startNativeNotchHost(): void {
   });
   notchHost = child;
   nativeNotchHostAvailable = true;
+  // A helper can exit while the renderer is still publishing sprite frames.
+  // Handle the pipe error on the stream itself; a try/catch around write()
+  // cannot catch an asynchronous EPIPE emitted by Node's Writable stream.
+  child.stdin?.once("error", (error) => {
+    console.warn("Native notch host input closed", error instanceof Error ? error.message : String(error));
+    if (notchHost === child) {
+      notchHost = null;
+      nativeNotchHostAvailable = false;
+    }
+  });
   child.once("error", (error) => {
     console.error("Native notch host failed", error);
     if (notchHost === child) {
@@ -96,7 +117,7 @@ function startNativeNotchHost(): void {
 
 function sendNotchVisual(update: { sprite: string; progress?: number | null; focused?: boolean; visible?: boolean }): void {
   const input = notchHost?.stdin;
-  if (!input || input.destroyed || input.writableEnded) return;
+  if (!nativeNotchHostAvailable || !input || input.destroyed || input.writableEnded) return;
   try {
     input.write(`${JSON.stringify(update)}\n`);
   } catch (error) {
@@ -175,8 +196,10 @@ async function createWindow(): Promise<void> {
   // Floating keeps View above ordinary applications without covering macOS
   // shutdown, Force Quit, and other system-owned safety surfaces.
   mainWindow.setAlwaysOnTop(true, "floating");
-  // Demo screenshots must include the overlay; live model captures must not.
-  mainWindow.setContentProtection(!config.simulateGaze);
+  // Keep the live overlay out of Astra's normal desktop screenshots. An
+  // explicit recording mode exposes the overlay to Hoots' recorder while the
+  // executor switches to the filtered ScreenCaptureKit capture path.
+  mainWindow.setContentProtection(!config.simulateGaze && !config.settings.hootsRecordingMode);
   mainWindow.webContents.on("did-fail-load", (_event, code, description, url) => {
     console.error("renderer failed to load", { code, description, url });
   });
@@ -259,7 +282,7 @@ function registerIpc(): void {
     broadcast({ type: "state", state: "PASSIVE" });
     broadcast({ type: "app-mode", mode: "simulated" });
     broadcast({ type: "gaze-status", status: "active" });
-    broadcast({ type: "notice", text: "Simulated gaze: move the mouse to look. Hold Shift to freeze. Keys 1-4/B/M/H/X/N drive the demo." });
+    broadcast({ type: "notice", text: "Simulated gaze: move the mouse to look. Hold Shift to freeze. Keys 1-4/B/M/X/N drive the demo." });
   });
 
   ipcMain.handle(IPC.quitApp, async () => {
@@ -274,8 +297,9 @@ function registerIpc(): void {
     await ctrl()?.prefetchOption(quadrant);
   });
 
-  ipcMain.handle(IPC.selectOption, async (_e, quadrant: "A" | "B" | "C" | "D") => {
-    await ctrl()?.selectOption(quadrant);
+  ipcMain.handle(IPC.selectOption, async (_e, selection: unknown) => {
+    if (!isSelectionEnvelope(selection)) return;
+    await ctrl()?.selectOption(selection);
   });
 
   ipcMain.handle(IPC.more, async () => {
@@ -286,48 +310,8 @@ function registerIpc(): void {
     await ctrl()?.back();
   });
 
-  ipcMain.handle(IPC.beginHint, async () => {
-    await ctrl()?.beginHint();
-  });
-
-  ipcMain.handle(IPC.updateHint, async (_e, text: string) => {
-    await ctrl()?.updateHint(text);
-  });
-
-  ipcMain.handle(IPC.clearHint, async () => {
-    await ctrl()?.clearHint();
-  });
-
-  ipcMain.handle(IPC.acceptHintCandidate, async (_e, id: string) => {
-    await ctrl()?.acceptHintCandidate(id);
-  });
-
-  ipcMain.handle(IPC.commitHintLiteral, async (_e, text: string) => {
-    await ctrl()?.commitHintLiteral(text);
-  });
-
-  ipcMain.handle(IPC.requestCompletion, async () => {
-    await ctrl()?.requestCompletion();
-  });
-
   ipcMain.handle(IPC.exitSession, async () => {
     await ctrl()?.exitSession();
-  });
-
-  ipcMain.handle(IPC.confirmYes, async () => {
-    await ctrl()?.confirmYes();
-  });
-
-  ipcMain.handle(IPC.confirmChange, async () => {
-    await ctrl()?.confirmChange();
-  });
-
-  ipcMain.handle(IPC.confirmRead, async () => {
-    await ctrl()?.confirmRead();
-  });
-
-  ipcMain.handle(IPC.confirmCancel, async () => {
-    await ctrl()?.confirmCancel();
   });
 
   ipcMain.handle(IPC.interruptExecutor, async () => {
@@ -346,11 +330,19 @@ function registerIpc(): void {
     await ctrl()?.recovery(choice);
   });
 
+  ipcMain.handle(IPC.contextToggle, async () => {
+    await ctrl()?.toggleContext();
+  });
+
+  ipcMain.handle(IPC.contextApproveSession, async () => {
+    await ctrl()?.approveContextSession();
+  });
+
   ipcMain.handle(IPC.gazeAnchor, async (_e, anchor: { xNorm: number; yNorm: number; windowXNorm: number | null; windowYNorm: number | null; insideActiveWindow: boolean }) => {
     ctrl()?.setAttentionAnchor({ ...anchor, screenXNorm: anchor.xNorm, screenYNorm: anchor.yNorm });
   });
 
-  ipcMain.handle(IPC.gazeSampleTelemetry, async (_e, valid: boolean) => {
+  ipcMain.handle(IPC.gazeSample, async (_e, valid: boolean) => {
     ctrl()?.onGazeConfidence(valid);
   });
 
@@ -379,7 +371,6 @@ function registerIpc(): void {
     if (!c) return null;
     return {
       state: c.machine.state,
-      telemetry: c.metricsSummary,
       decoderProvider: c.providerNames.decoder,
       ttsProvider: c.providerNames.tts,
       gazeProvider: c.providerNames.gaze,
@@ -408,9 +399,6 @@ function registerIpc(): void {
       case "back":
         await c.back();
         break;
-      case "hint":
-        await c.beginHint();
-        break;
       case "exit":
         await c.exitSession();
         break;
@@ -423,7 +411,6 @@ function registerIpc(): void {
     }
   });
 
-  ipcMain.handle(IPC.getTelemetry, async () => ctrl()?.metricsSummary ?? null);
 }
 
 async function bootstrap(): Promise<void> {
@@ -435,6 +422,20 @@ async function bootstrap(): Promise<void> {
     screenWidth: geometry.width,
     screenHeight: geometry.height,
     screenScale: geometry.scale,
+    contextAllowedApps: config.contextAllowedApps,
+    astraCaptureHost: findNativeScreenCaptureHost(),
+    overlayProcessIds: () => {
+      const ids = [process.pid, notchHost?.pid ?? 0];
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          ids.push(mainWindow.webContents.getOSProcessId());
+        } catch {
+          // The renderer may be between creation and teardown. The main and
+          // native helper PIDs remain available for the next capture.
+        }
+      }
+      return [...new Set(ids.filter((pid) => Number.isInteger(pid) && pid > 0))];
+    },
   });
   controller.setScreenSize(geometry.width, geometry.height);
   registerIpc();
@@ -447,7 +448,6 @@ async function bootstrap(): Promise<void> {
     controller.startContextPolling(),
     createWindow(),
   ]);
-
   try {
     const quitAccelerator = "CommandOrControl+Alt+Shift+V";
     const quitRegistered = globalShortcut.register(quitAccelerator, () => app.quit());
@@ -473,20 +473,21 @@ async function bootstrap(): Promise<void> {
   const decoderReady = config.decoderProvider === "gemini"
     ? config.hasGeminiKey
     : config.decoderProvider === "openrouter"
-      ? config.hasOpenRouterKey || config.hasGeminiKey
-    : config.decoderProvider === "openai"
-      ? config.hasOpenAiKey || config.hasGeminiKey
+      ? config.hasOpenRouterKey
       : true;
   const decoderKeyName = config.decoderProvider === "gemini"
     ? "GEMINI_API_KEY"
     : config.decoderProvider === "openrouter"
       ? "OPENROUTER_API_KEY"
-      : "OPENAI_API_KEY";
+      : null;
   // Successful live startup is intentionally quiet. Provider identity remains
-  // available in telemetry and the debug HUD; only a missing required key is
-  // surfaced as an actionable notice.
-  if (!config.simulateGaze && !decoderReady) {
-    broadcast({ type: "notice", text: `Live gaze enabled. ${decoderKeyName} and GEMINI_API_KEY are not set, so ${config.decoderProvider} prompt decoding will stop with a configuration error.` });
+  // available in the debug HUD; only a missing required key is surfaced as an
+  // actionable notice.
+  if (!config.simulateGaze && !decoderReady && decoderKeyName) {
+    broadcast({ type: "notice", text: `Live gaze enabled. ${decoderKeyName} is not set, so ${config.decoderProvider} prompt decoding will stop with a configuration error.` });
+  }
+  if (!config.simulateGaze && config.decoderFallbackProvider === "gemini" && !config.hasGeminiKey) {
+    broadcast({ type: "notice", text: "Direct Gemini API fallback is configured but GEMINI_API_KEY is not set; OpenRouter transport failures will remain explicit." });
   }
 
   app.on("window-all-closed", () => {

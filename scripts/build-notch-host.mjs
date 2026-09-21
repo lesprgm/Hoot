@@ -7,18 +7,27 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 if (process.platform !== "darwin") {
-  console.log("Skipping the native notch host outside macOS.");
+  console.log("Skipping the native notch and ScreenCaptureKit hosts outside macOS.");
   process.exit(0);
 }
 
 const root = resolve(import.meta.dirname, "..");
-const source = resolve(root, "native/NotchHost.swift");
-const output = resolve(root, "native/ViewNotchHost");
+const notchSource = resolve(root, "native/NotchHost.swift");
+const notchOutput = resolve(root, "native/ViewNotchHost");
+const captureSource = resolve(root, "native/ScreenCaptureHost.swift");
+const captureOutput = resolve(root, "native/ViewScreenCaptureHost");
 
-await mkdir(dirname(output), { recursive: true });
+await mkdir(dirname(notchOutput), { recursive: true });
 await execFileAsync(
   "swiftc",
-  ["-parse-as-library", "-swift-version", "5", "-O", source, "-o", output, "-framework", "AppKit", "-framework", "CoreGraphics"],
+  ["-parse-as-library", "-swift-version", "5", "-O", notchSource, "-o", notchOutput, "-framework", "AppKit", "-framework", "CoreGraphics"],
   { timeout: 120_000, maxBuffer: 10 * 1024 * 1024 },
 );
-console.log(`Built ${output}`);
+console.log(`Built ${notchOutput}`);
+
+await execFileAsync(
+  "swiftc",
+  ["-parse-as-library", "-swift-version", "5", "-O", captureSource, "-o", captureOutput, "-framework", "ScreenCaptureKit", "-framework", "CoreGraphics", "-framework", "ImageIO"],
+  { timeout: 120_000, maxBuffer: 10 * 1024 * 1024 },
+);
+console.log(`Built ${captureOutput}`);
