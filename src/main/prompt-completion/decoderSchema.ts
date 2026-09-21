@@ -1,9 +1,5 @@
 import { z } from "zod";
-
-export const hintSchema = z.object({
-  text: z.string().min(1).max(200),
-  type: z.enum(["letters", "word_prefix", "keyword", "initialism", "number", "literal_text"]),
-});
+import type { IntentPatch } from "../../shared/intent";
 
 export const rejectedSetSchema = z.object({
   labels: z.array(z.string()).min(1).max(8),
@@ -13,7 +9,6 @@ export const rejectedSetSchema = z.object({
 export const decoderInputSchema = z.object({
   displayPrompt: z.string(),
   explicitSemanticEvidence: z.array(z.string()),
-  hints: z.array(hintSchema),
   rejectedSets: z.array(rejectedSetSchema),
   historyDepth: z.number().int().min(0),
   userLexicon: z.object({
@@ -30,10 +25,63 @@ export const decoderInputSchema = z.object({
     visibleReferent: z.string().nullable(),
     gazeTargetDescription: z.string().nullable(),
     capturedImageDataUrl: z.string().nullable(),
+    contextState: z.enum(["disabled", "active", "paused", "blocked"]).optional(),
+    contextSessionId: z.string().nullable().optional(),
+    contextRevision: z.number().int().min(0).optional(),
+    contextSources: z.array(z.object({
+      kind: z.enum(["active_window", "accessibility", "browser", "screenshot", "task"]),
+      state: z.enum(["available", "unavailable", "paused", "not_requested"]),
+      observedAt: z.number().nullable(),
+      detail: z.string().optional(),
+    })).max(8).optional(),
+    contextReferences: z.array(z.object({
+      id: z.string().max(512),
+      kind: z.enum(["window", "document", "selection", "control"]),
+      label: z.string().max(240),
+      appName: z.string().max(240),
+      source: z.enum(["active_window", "accessibility", "browser", "screenshot", "task"]),
+      observedAt: z.number(),
+      bounds: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }).optional(),
+      url: z.string().max(512).optional(),
+      text: z.string().max(2000).optional(),
+      revision: z.string().max(200).optional(),
+    })).max(8).optional(),
+    focusedElement: z.object({
+      id: z.string().max(512),
+      kind: z.enum(["window", "document", "selection", "control"]),
+      label: z.string().max(240),
+      appName: z.string().max(240),
+      source: z.enum(["active_window", "accessibility", "browser", "screenshot", "task"]),
+      observedAt: z.number(),
+      bounds: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }).optional(),
+      url: z.string().max(512).optional(),
+      text: z.string().max(2000).optional(),
+      revision: z.string().max(200).optional(),
+    }).nullable().optional(),
+    selectedText: z.string().max(4000).nullable().optional(),
+    visibleText: z.string().max(4000).nullable().optional(),
+    contextLedger: z.object({
+      active: z.boolean(),
+      revision: z.number().int().min(0),
+      observations: z.array(z.object({
+        id: z.string().max(512),
+        source: z.enum(["foreground_context", "recent_context", "background_context"]),
+        kind: z.string().max(80),
+        label: z.string().max(240),
+        appName: z.string().max(240).nullable(),
+        url: z.string().max(512).optional(),
+        text: z.string().max(2000).optional(),
+        referenceId: z.string().max(512).optional(),
+        observedAt: z.number(),
+        revision: z.number().int().min(0),
+      })).max(24),
+    }).optional(),
   }),
   consecutiveNoneCount: z.number().int().min(0),
   clarificationAnswers: z.array(z.object({ question: z.string(), answer: z.string() })),
   turn: z.number().int().min(0),
+  task: z.unknown().nullable().optional(),
+  intentFrame: z.unknown().optional(),
 });
 
 const rawCandidateSchema = z.object({
@@ -46,6 +94,10 @@ const rawCandidateSchema = z.object({
   semanticGroup: z.string().max(80),
   estimatedLikelihood: z.number().min(0).max(1),
   introducesNewMeaning: z.boolean(),
+  operation: z.string().max(240).optional(),
+  referenceId: z.string().max(512).optional(),
+  referenceRevision: z.string().max(200).optional(),
+  intentPatch: z.record(z.string(), z.unknown()).transform((value) => value as IntentPatch).optional(),
 });
 
 export const decoderResponseSchema = z.object({
@@ -58,7 +110,9 @@ export const decoderResponseSchema = z.object({
       description: z.string(),
     })
   ),
-  candidates: z.array(rawCandidateSchema).min(4).max(24),
+  // The model proposes a pool. The host ranker chooses the four visible cards.
+  candidates: z.array(rawCandidateSchema).min(8).max(12),
+  unresolvedSlots: z.array(z.object({ name: z.string(), description: z.string() })).max(12).optional(),
   clarification: z
     .object({
       spokenQuestion: z.string().min(1).max(200),
