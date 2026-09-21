@@ -90,12 +90,9 @@ export class ActiveWindowEngine {
   active: WindowContext | null = null;
   private screenWidth: number;
   private screenHeight: number;
-  private screenScale: number;
-
-  constructor(screenWidth: number, screenHeight: number, screenScale: number) {
+  constructor(screenWidth: number, screenHeight: number, _screenScale: number) {
     this.screenWidth = screenWidth;
     this.screenHeight = screenHeight;
-    this.screenScale = screenScale;
     this.sources = [new GetWindowsSource(), new OsascriptSource()];
   }
 
