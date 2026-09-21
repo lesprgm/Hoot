@@ -10,10 +10,11 @@
     "node": ">=20"
   },
   "scripts": {
-    "predev": "node scripts/build-notch-host.mjs && node scripts/sync-realeye-assets.mjs",
-    "prebuild": "node scripts/build-notch-host.mjs && node scripts/sync-realeye-assets.mjs",
+    "predev": "node scripts/build-notch-host.mjs",
+    "prebuild": "node scripts/build-notch-host.mjs",
     "dev": "electron-vite dev",
     "agent:live": "npm run build && GAZE_PROVIDER=webeyetrack SIMULATE_GAZE=false FORCE_CALIBRATION=false ALLOW_UNVERIFIED_GAZE=true EXECUTOR_PROVIDER=openai EXECUTION_MODE=live DEBUG_HUD=false electron-vite preview 2>&1 | tee /tmp/view-live.log",
+    "demo:simulate": "npm run build && GAZE_PROVIDER=simulated SIMULATE_GAZE=true CONTEXT_IN_SIMULATION=true DECODER_PROVIDER=openrouter DECODER_MODEL=deepseek/deepseek-v4-flash-0731 EXECUTOR_PROVIDER=openai EXECUTION_MODE=live DEBUG_HUD=false electron-vite preview 2>&1 | tee /tmp/view-simulated.log",
     "demo:calibrate": "npm run build && GAZE_PROVIDER=webeyetrack SIMULATE_GAZE=false FORCE_CALIBRATION=false DEBUG_HUD=false electron-vite preview 2>&1 | tee /tmp/view-calibration.log",
     "demo:gaze-unverified": "npm run build && GAZE_PROVIDER=webeyetrack SIMULATE_GAZE=false FORCE_CALIBRATION=false ALLOW_UNVERIFIED_GAZE=true DEBUG_HUD=false electron-vite preview 2>&1 | tee /tmp/view-calibration.log",
     "demo:recalibrate": "npm run build && GAZE_PROVIDER=webeyetrack SIMULATE_GAZE=false FORCE_CALIBRATION=true DEBUG_HUD=false electron-vite preview 2>&1 | tee /tmp/view-calibration.log",
@@ -22,8 +23,6 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "test:e2e": "npm run build && playwright test",
-    "test:watch": "vitest",
-    "setup": "node scripts/setup-optional.mjs",
     "build:sprites": "node scripts/build-owl-sprites.mjs",
     "verify:webeyetrack": "bash scripts/build-webeyetrack.sh --check"
   },
@@ -46,9 +45,7 @@
     "vitest": "^5.0.0"
   },
   "optionalDependencies": {
-    "@huggingface/transformers": "^4.2.0",
     "@nut-tree-fork/nut-js": "^4.2.6",
-    "@realeye-io/webcam-eyetracker-light-open": "^1.1.0",
     "get-windows": "^9.3.0",
     "openai": "^7.15.0",
     "sharp": "^0.35.4"
