@@ -1,4 +1,6 @@
-import type { DecoderInput, DecoderResponse, HintType } from "../../shared/types";
+import type { DecoderInput, DecoderResponse } from "../../shared/types";
+import type { IntentPatch } from "../../shared/intent";
+import type { DecoderRequestOptions } from "./DecoderRequestCoordinator";
 
 interface EvidenceMap {
   action: string[];
@@ -135,7 +137,7 @@ interface CandidateSpec extends TemplateGroup {
 export class FixtureDecoderProvider {
   readonly name = "fixture-decoder";
 
-  async generateCandidates(input: DecoderInput): Promise<DecoderResponse> {
+  async generateCandidates(input: DecoderInput, _options?: DecoderRequestOptions): Promise<DecoderResponse> {
     return this.generate(input);
   }
 
@@ -158,6 +160,7 @@ export class FixtureDecoderProvider {
         semanticGroup: spec.group,
         estimatedLikelihood: spec.score,
         introducesNewMeaning: false,
+        intentPatch: parsePatch(spec.evidence || spec.fragment),
       });
     };
 
@@ -169,7 +172,24 @@ export class FixtureDecoderProvider {
       }));
 
     const root = ev.action.length === 0 && !ev.target;
-    const hintText = input.hints.map((h) => h.text).join(" ").trim();
+    if (input.consecutiveNoneCount >= 2) {
+      return {
+        mode: "clarify",
+        normalizedPrompt: withEllipsis(base),
+        promptIsExecutable: false,
+        openSlots: [],
+        candidates: [],
+        clarification: {
+          spokenQuestion: "What is this mainly about?",
+          answers: [
+            { label: "A PERSON", meaning: "about a person", resultingEvidence: "topic=person" },
+            { label: "INFORMATION", meaning: "about information", resultingEvidence: "topic=information" },
+            { label: "SOMETHING TO DO", meaning: "about an action", resultingEvidence: "topic=action" },
+            { label: "A PERSONAL NEED", meaning: "a personal need", resultingEvidence: "topic=personal" },
+          ],
+        },
+      };
+    }
 
     if (root) {
       const groups: TemplateGroup[] = [
@@ -180,7 +200,7 @@ export class FixtureDecoderProvider {
         { label: "EXPLAIN / SUMMARIZE…", evidence: "action=explain", fragment: "explain", score: 0.68, group: "action_explain" },
         { label: "PLAY / CONTROL…", evidence: "action=play", fragment: "play", score: 0.6, group: "action_play" },
         { label: "ASK A QUESTION…", evidence: "action=ask", fragment: "find out", score: 0.52, group: "action_ask" },
-        { label: "SOMETHING ELSE…", evidence: "", fragment: "", score: 0.42, group: "coverage" },
+        { label: "EXPLORE ANOTHER ANGLE…", evidence: "", fragment: "", score: 0.42, group: "explore_more" },
       ];
       for (const s of specs(groups, "I want you to")) add(s);
       add({
@@ -201,42 +221,7 @@ export class FixtureDecoderProvider {
       };
     }
 
-    if (hintText.length > 0) {
-      for (const m of this.lexiconMatches(hintText, input)) {
-        const kind = m.kind === "person" ? "recipient" : "target";
-        add({
-          label: m.name.toUpperCase(),
-          evidence: `${kind}=${m.name}`,
-          fragment: m.name,
-          score: 0.95,
-          group: `entity_${m.kind}`,
-          type: "continuation",
-          resultingPrompt: withEllipsis(`${base} ${m.name}`),
-        });
-      }
-      if (ev.target == null || (ev.action.some((a) => a === "send" || a === "email") && ev.recipient == null)) {
-        add({
-          label: `“${hintText.toUpperCase()}”…`,
-          evidence: `literal=${hintText}`,
-          fragment: hintText,
-          score: 0.88,
-          group: "hint_echo",
-          type: "continuation",
-          resultingPrompt: withEllipsis(`${base} ${hintText}`),
-        });
-        add({
-          label: "KEEP SPELLING…",
-          evidence: `hint=${hintText}`,
-          fragment: "",
-          score: 0.6,
-          group: "hint",
-          type: "continuation",
-          resultingPrompt: withEllipsis(base),
-        });
-      }
-    }
-
-    if (ev.target == null && !ev.this && hintText.length === 0) {
+    if (ev.target == null && !ev.this) {
       const action = ev.action[ev.action.length - 1];
       const templates: TemplateGroup[] =
         action === "send" || action === "email"
@@ -245,7 +230,7 @@ export class FixtureDecoderProvider {
               { label: "A MESSAGE…", evidence: "target=message", fragment: "a message", score: 0.85, group: "message_target" },
               { label: "THIS FILE / DOCUMENT…", evidence: "this", fragment: "this", score: 0.8, group: "this_target" },
               { label: "A SUMMARY…", evidence: "detail=summary", fragment: "a summary", score: 0.68, group: "summary" },
-              { label: "SOMETHING ELSE…", evidence: "", fragment: "", score: 0.4, group: "coverage" },
+              { label: "EXPLORE ANOTHER ANGLE…", evidence: "", fragment: "", score: 0.4, group: "explore_more" },
             ]
           : [
               { label: "A FILE / DOCUMENT…", evidence: "target=file", fragment: "a file or document", score: 0.92, group: "file_target" },
@@ -254,7 +239,7 @@ export class FixtureDecoderProvider {
               { label: "AN APP / SETTING…", evidence: "target=app", fragment: "an app or setting", score: 0.75, group: "app_target" },
               { label: "A MEETING…", evidence: "target=meeting", fragment: "a meeting", score: 0.6, group: "meeting_target" },
               { label: "AN IMAGE / PHOTO…", evidence: "target=image", fragment: "an image or photo", score: 0.55, group: "image_target" },
-              { label: "SOMETHING ELSE…", evidence: "", fragment: "", score: 0.4, group: "coverage" },
+              { label: "EXPLORE ANOTHER ANGLE…", evidence: "", fragment: "", score: 0.4, group: "explore_more" },
             ];
       for (const s of specs(templates, base)) add(s);
       return {
@@ -274,7 +259,7 @@ export class FixtureDecoderProvider {
       templates.push(
         { label: "TO A RECENT CONTACT…", evidence: "recipient=<recent>", fragment: "to a recent contact", score: 0.7, group: "recipient" },
         { label: "TO SOMEONE ELSE…", evidence: "recipient=<someone>", fragment: "to someone else", score: 0.6, group: "recipient" },
-        { label: "SPELL / HINT…", evidence: "hint", fragment: "", score: 0.94, group: "hint" }
+        { label: "TO A NEW CONTACT…", evidence: "recipient=<new>", fragment: "to a new contact", score: 0.55, group: "recipient" }
       );
       for (const s of specs(templates, base)) add(s);
       return {
@@ -286,7 +271,7 @@ export class FixtureDecoderProvider {
       };
     }
 
-    if (ev.recipient == null && ev.detail.length === 0 && hintText.length === 0 && ev.time == null) {
+    if (ev.recipient == null && ev.detail.length === 0 && ev.time == null) {
       const templates: TemplateGroup[] = [
         ...(ev.relation.length === 0 ? [
           { label: "I DOWNLOADED…", evidence: "relation=downloaded", fragment: "I downloaded", score: 0.85, group: "origin_downloaded" },
@@ -296,7 +281,7 @@ export class FixtureDecoderProvider {
         ] : []),
         { label: "YESTERDAY…", evidence: "time=yesterday", fragment: "yesterday", score: 0.68, group: "time" },
         { label: "A SPECIFIC DATE…", evidence: "time=<date>", fragment: "a specific date", score: 0.5, group: "time" },
-        { label: "SOMETHING ELSE…", evidence: "", fragment: "", score: 0.4, group: "coverage" },
+        { label: "EXPLORE ANOTHER ANGLE…", evidence: "", fragment: "", score: 0.4, group: "explore_more" },
       ];
       for (const s of specs(templates, base)) add(s);
       add({ label: "DO THAT", evidence: "", fragment: "", score: 0.45, group: "coverage", type: "do_that", resultingPrompt: base });
@@ -315,7 +300,7 @@ export class FixtureDecoderProvider {
         { label: "JUST THE METHODS…", evidence: "detail=the methods section", fragment: "the methods section", score: 0.8, group: "scope_methods" },
         { label: "THE MAIN FINDINGS…", evidence: "detail=the main findings", fragment: "the main findings", score: 0.72, group: "scope_findings" },
         { label: "A SPECIFIC SECTION…", evidence: "detail=a specific section", fragment: "a specific section", score: 0.62, group: "scope_specific" },
-        { label: "SOMETHING ELSE…", evidence: "", fragment: "", score: 0.4, group: "coverage" },
+        { label: "EXPLORE ANOTHER ANGLE…", evidence: "", fragment: "", score: 0.4, group: "explore_more" },
       ];
       for (const s of specs(templates, base)) add(s);
       return {
@@ -334,7 +319,7 @@ export class FixtureDecoderProvider {
       { label: "AND SEND IT…", evidence: "action=send", fragment: "and send it", score: 0.7, group: "compound_send" },
       { label: "AND TELL ME ABOUT IT…", evidence: "action=explain", fragment: "and tell me about it", score: 0.66, group: "compound_explain" },
       { label: "DO THAT", evidence: "", fragment: "", score: 0.62, group: "coverage" },
-      { label: "SOMETHING ELSE…", evidence: "", fragment: "", score: 0.4, group: "coverage" },
+      { label: "EXPLORE ANOTHER ANGLE…", evidence: "", fragment: "", score: 0.4, group: "explore_more" },
     ].filter((template) => {
       if (!template.evidence.startsWith("action=")) return true;
       return !ev.action.includes(template.evidence.slice("action=".length));
@@ -349,9 +334,18 @@ export class FixtureDecoderProvider {
         group: "full_prompt",
         type: "full_prompt",
         resultingPrompt: base,
+        });
+      }
+      add({
+        label: "EXPLORE ANOTHER ANGLE…",
+        evidence: "",
+        fragment: "",
+        score: 0.3,
+        group: "explore_more",
+        type: "continuation",
+        resultingPrompt: withEllipsis(base),
       });
-    }
-    return {
+      return {
       mode: "predict",
       normalizedPrompt: withEllipsis(base),
       promptIsExecutable: true,
@@ -360,7 +354,7 @@ export class FixtureDecoderProvider {
     };
   }
 
-  async generateClarification(_input?: DecoderInput): Promise<NonNullable<DecoderResponse["clarification"]>> {
+  async generateClarification(_input?: DecoderInput, _options?: DecoderRequestOptions): Promise<NonNullable<DecoderResponse["clarification"]>> {
     return {
       spokenQuestion: "What is this mainly about?",
       answers: [
@@ -372,14 +366,21 @@ export class FixtureDecoderProvider {
     };
   }
 
-  private lexiconMatches(hint: string, input: DecoderInput): Array<{ name: string; kind: string }> {
-    const h = normalize(hint);
-    if (!h) return [];
-    const all: Array<{ name: string; kind: string }> = [];
-    for (const name of input.userLexicon.people) all.push({ name, kind: "person" });
-    for (const name of input.userLexicon.places) all.push({ name, kind: "place" });
-    for (const name of input.userLexicon.apps) all.push({ name, kind: "app" });
-    for (const name of input.userLexicon.customVocabulary) all.push({ name, kind: "vocab" });
-    return all.filter((e) => normalize(e.name).startsWith(h));
+}
+
+function parsePatch(fragment: string): IntentPatch | undefined {
+  const patch: IntentPatch = {};
+  for (const rawPart of fragment.split(";")) {
+    const part = rawPart.trim();
+    if (!part) continue;
+    const separator = part.indexOf("=");
+    if (separator < 1) {
+      if (part.toLowerCase() === "this") patch.this = true;
+      continue;
+    }
+    const key = part.slice(0, separator).trim().toLowerCase();
+    const value = part.slice(separator + 1).trim();
+    if (key && value) patch[key] = value;
   }
+  return Object.keys(patch).length > 0 ? patch : undefined;
 }
