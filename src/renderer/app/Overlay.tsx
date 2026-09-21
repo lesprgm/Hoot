@@ -1,12 +1,30 @@
 import React from "react";
 import type { DisplayOption } from "../../shared/types";
 import type { PlacedRegion } from "../overlay/layout";
-import { SPRITE_STATE_LABEL, QUADRANT_IDS } from "./traits";
 
-export function Sprite({ state, progress, hasNotch, nativeHost = false }: { state: string; progress: number | null; hasNotch: boolean; nativeHost?: boolean }): React.ReactElement {
+const QUADRANT_IDS = ["A", "B", "C", "D"] as const;
+
+const SPRITE_STATE_LABEL: Record<string, string> = {
+  idle: "idle",
+  attention: "attention",
+  dwelling: "dwelling",
+  summoned: "summoned",
+  listening_for_gaze: "listening",
+  thinking: "thinking",
+  speaking: "speaking",
+  computer_use_running: "working",
+  needs_confirmation: "needs you",
+  success: "done",
+  interrupted: "interrupted",
+  error: "error",
+  paused: "paused",
+  hidden: "hidden",
+};
+
+export function Sprite({ state, progress, hasNotch, nativeHost = false, startupHidden = false }: { state: string; progress: number | null; hasNotch: boolean; nativeHost?: boolean; startupHidden?: boolean }): React.ReactElement {
   const isWorking = state === "computer_use_running" || state === "thinking" || state === "speaking";
   return (
-    <div className={`sprite sprite-state-${state}${hasNotch ? " sprite-has-notch" : " sprite-no-notch"}${nativeHost ? " native-notch-proxy" : ""}`}>
+    <div className={`sprite sprite-state-${state}${hasNotch ? " sprite-has-notch" : " sprite-no-notch"}${nativeHost ? " native-notch-proxy" : ""}${startupHidden ? " sprite-startup-hidden" : ""}`}>
       <div className="sprite-ring">
         {progress !== null ? (
           <svg viewBox="0 0 100 100" className="ring-svg">
@@ -36,9 +54,10 @@ export function QuadrantCard({ quadrant, option, focused, progress, region, comp
   );
 }
 
-export function QuadrantGrid({ options, focused, progress, regions, compact, locked }: { options: DisplayOption[]; focused: string | null; progress: Record<string, number>; regions: PlacedRegion[]; compact: boolean; locked: boolean }): React.ReactElement {
+export function QuadrantGrid({ options, focused, progress, regions, compact, locked, contextLabel }: { options: DisplayOption[]; focused: string | null; progress: Record<string, number>; regions: PlacedRegion[]; compact: boolean; locked: boolean; contextLabel?: string }): React.ReactElement {
   return (
     <div className={`quadrant-grid${locked ? " locked" : ""}`} aria-busy={locked}>
+      {contextLabel ? <div className="card-context-label">WORKING WITH: {contextLabel}</div> : null}
       {QUADRANT_IDS.map((q) => {
         const option = options.find((o) => o.quadrant === q);
         const region = regions.find((r) => r.id === q);

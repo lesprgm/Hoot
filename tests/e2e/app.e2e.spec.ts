@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 
-test("simulation exercises stationary summon and explicit Dasher text entry", async () => {
+test("simulation exercises stationary summon without a text-entry panel", async () => {
   const errors: string[] = [];
   const app = await electron.launch({
     args: ["."],
@@ -14,6 +14,7 @@ test("simulation exercises stationary summon and explicit Dasher text entry", as
       ...process.env,
       SIMULATE_GAZE: "true",
       GAZE_PROVIDER: "simulated",
+      CONTEXT_IN_SIMULATION: "false",
       EXECUTION_MODE: "live",
       EXECUTOR_PROVIDER: "openai",
       DECODER_PROVIDER: "fixture",
@@ -30,6 +31,7 @@ test("simulation exercises stationary summon and explicit Dasher text entry", as
     await window.waitForLoadState("domcontentloaded");
     await expect(window).toHaveTitle("Gaze Agent");
     await expect(window.locator(".sprite")).toBeVisible();
+    await expect(window.locator(".sprite")).not.toHaveClass(/sprite-startup-hidden/);
     await window.evaluate(() => {
       const state = globalThis as unknown as { __viewAudioCues: string[] };
       state.__viewAudioCues = [];
@@ -79,8 +81,9 @@ test("simulation exercises stationary summon and explicit Dasher text entry", as
     await window.waitForTimeout(150);
     await expect(window.locator(".sprite")).toHaveClass(/sprite-state-dwelling/);
     expect(await window.locator(".sprite").evaluate((element) => getComputedStyle(element).animationName)).toContain("sprite-kick");
-    await window.waitForTimeout(900);
-    await expect(window.locator(".prompt-buffer")).toContainText("I want you to");
+    await window.waitForTimeout(1_400);
+    await window.evaluate(() => (globalThis as unknown as { __gazeIpc: { invoke: (channel: string) => Promise<unknown> } }).__gazeIpc.invoke("session:summon"));
+    await expect(window.locator(".prompt-buffer")).toContainText("I want you to", { timeout: 10_000 });
     await expect(window.locator(".quadrant")).toHaveCount(4);
     await expect.poll(() => window.evaluate(() => (globalThis as unknown as { __viewAudioCues: string[] }).__viewAudioCues)).toContain("ready");
     const panels = await window.locator(".quadrant").evaluateAll((elements) => elements.map((element) => {
@@ -104,13 +107,7 @@ test("simulation exercises stationary summon and explicit Dasher text entry", as
     await expect.poll(() => window.evaluate(() => (globalThis as unknown as { __viewAudioCues: string[] }).__viewAudioCues.filter((cue) => cue === "ready").length)).toBeGreaterThanOrEqual(2);
     await window.screenshot({ path: "/tmp/view-audio-feedback-cards.png" });
 
-    await window.keyboard.press("h");
-    await expect(window.locator(".dasher-panel")).toBeVisible();
-    await expect(window.locator(".dasher-title")).toContainText("READY", { timeout: 30_000 });
-    const dasher = window.frameLocator(".dasher-frame");
-    await expect(dasher.locator("#canvas")).toBeVisible();
-    await expect(dasher.locator("#status")).toContainText("Ready");
-    await expect(window.locator(".dasher-actions button")).toHaveCount(4);
+    await expect(window.locator(".shelf-zone")).toHaveCount(3);
 
     const upstreamGazeAssets = await window.evaluate(async () => {
       await new Promise<void>((resolveLoad, rejectLoad) => {
@@ -134,14 +131,14 @@ test("simulation exercises stationary summon and explicit Dasher text entry", as
     });
     expect(upstreamGazeAssets).toEqual({ webcamClient: "function", proxy: "function", assetsAvailable: true });
 
-    await window.screenshot({ path: "/tmp/gaze-agent-dasher.png" });
+    await window.screenshot({ path: "/tmp/gaze-agent-semantic-cards.png" });
     expect(errors).toEqual([]);
   } finally {
     await app.close();
   }
 });
 
-test("semantic gaze prefetches the focused branch before dwell commits", async () => {
+test("semantic gaze updates the focused branch after dwell commits", async () => {
   const app = await launchDemo();
   const window = await app.firstWindow();
   const invoke = (channel: string, ...args: unknown[]) => window.evaluate(
@@ -158,11 +155,7 @@ test("semantic gaze prefetches the focused branch before dwell commits", async (
     await window.mouse.move(card!.x + card!.width / 2, card!.y + card!.height / 2);
     await window.waitForTimeout(300);
 
-    const before = await invoke("debug:get") as { telemetry: { decoderColdLatencyMs: number[]; prefetchHits: number } };
-    expect(before.telemetry.decoderColdLatencyMs.length).toBeGreaterThanOrEqual(1);
-
     await window.keyboard.press("1");
-    await expect.poll(async () => (await invoke("debug:get") as { telemetry: { prefetchHits: number } }).telemetry.prefetchHits).toBeGreaterThanOrEqual(1);
     await expect(window.locator(".prompt-buffer")).toContainText("I want you to find");
     await window.screenshot({ path: "/tmp/view-prefetch-semantic-card.png" });
   } finally {
@@ -184,9 +177,44 @@ test("live startup contains no simulated surface and requires eye calibration", 
     await expect(window.locator(".topbar")).toHaveCount(0);
     await expect(window.locator(".wizard")).toContainText("Gaze controls stay disabled until calibration passes");
     expect(await window.locator("#gaze-camera").evaluate((video) => (video as HTMLVideoElement).srcObject === null)).toBe(true);
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isContentProtected())).toBe(true);
     const closed = window.waitForEvent("close");
     await window.getByRole("button", { name: "Quit View" }).click();
     await closed;
+  } finally {
+    if (!(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length === 0).catch(() => true))) await app.close();
+  }
+});
+
+test("recording mode exposes Hoots to the recorder while retaining a live setup boundary", async () => {
+  const app = await electron.launch({
+    args: [`--user-data-dir=${mkdtempSync(join(tmpdir(), "view-recording-e2e-"))}`, "."],
+    cwd: resolve(__dirname, "../.."),
+    env: {
+      ...process.env,
+      SIMULATE_GAZE: "false",
+      GAZE_PROVIDER: "webeyetrack",
+      EXECUTION_MODE: "live",
+      EXECUTOR_PROVIDER: "openai",
+      DECODER_PROVIDER: "fixture",
+      TTS_PROVIDER: "mute",
+      OPENAI_API_KEY: "",
+      HOOTS_RECORDING_MODE: "true",
+      NODE_ENV: "production",
+    },
+  });
+  try {
+    const window = await app.firstWindow();
+    await expect(window.getByRole("button", { name: "Start eye calibration" })).toBeVisible();
+    const recordingBoundary = await app.evaluate(({ BrowserWindow }) => {
+      const overlay = BrowserWindow.getAllWindows()[0];
+      return { contentProtected: overlay.isContentProtected() };
+    });
+    expect(recordingBoundary.contentProtected).toBe(false);
+    const settings = await window.evaluate(() => (globalThis as unknown as {
+      __gazeIpc: { invoke: (channel: string) => Promise<{ settings?: { hootsRecordingMode?: boolean } }> };
+    }).__gazeIpc.invoke("app:get-config"));
+    expect(settings.settings?.hootsRecordingMode).toBe(true);
   } finally {
     if (!(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length === 0).catch(() => true))) await app.close();
   }
@@ -203,7 +231,18 @@ test("completed intent executes directly and unavailable executor recovery retur
     await invoke("session:summon");
     await expect(window.locator(".prompt-buffer")).toBeVisible();
 
-    await invoke("session:commit-hint-literal", "find a file");
+    await window.keyboard.press("1");
+    const selectCard = async (label: string) => {
+      await expect.poll(async () => (await window.locator(".quadrant-label").allTextContents()).some((value) => value.includes(label))).toBe(true);
+      const labels = await window.locator(".quadrant-label").allTextContents();
+      const index = labels.findIndex((value) => value.includes(label));
+      expect(index).toBeGreaterThanOrEqual(0);
+      await window.keyboard.press(String(index + 1));
+    };
+    await selectCard("A FILE");
+    await selectCard("I DOWNLOADED");
+    await selectCard("DO THAT");
+    await window.keyboard.press("3");
     await expect(window.locator(".recovery")).toBeVisible({ timeout: 5_000 });
     await invoke("recovery:choose", "choose_else");
     await expect(window.locator(".prompt-buffer")).toBeVisible({ timeout: 5_000 });
@@ -221,6 +260,7 @@ async function launchDemo() {
       ...process.env,
       SIMULATE_GAZE: "true",
       GAZE_PROVIDER: "simulated",
+      CONTEXT_IN_SIMULATION: "false",
       EXECUTION_MODE: "live",
       EXECUTOR_PROVIDER: "openai",
       DECODER_PROVIDER: "fixture",

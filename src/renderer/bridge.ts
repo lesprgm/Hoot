@@ -6,15 +6,16 @@ import type {
   ContextSnapshot,
   DebugInfo,
   EditorState,
-  IntentConfirmationState,
   PermissionStatus,
   PromptViewState,
   RecoveryState,
   SpriteState,
   SteeringState,
-  TelemetrySummary,
   ViewMessage,
+  SelectionEnvelope,
+  InteractionSnapshot,
 } from "../shared/types";
+import type { TaskRecord } from "../shared/task";
 import { invoke, subscribe } from "./subscribe";
 
 export interface RendererApi {
@@ -27,24 +28,16 @@ export interface RendererApi {
   quitApp(): Promise<void>;
   summon(): Promise<void>;
   prefetchOption(quadrant: "A" | "B" | "C" | "D"): Promise<void>;
-  selectOption(quadrant: "A" | "B" | "C" | "D"): Promise<void>;
+  selectOption(selection: SelectionEnvelope): Promise<void>;
   more(): Promise<void>;
   back(): Promise<void>;
-  beginHint(): Promise<void>;
-  updateHint(text: string): Promise<void>;
-  clearHint(): Promise<void>;
-  acceptHintCandidate(id: string): Promise<void>;
-  commitHintLiteral(text: string): Promise<void>;
-  requestCompletion(): Promise<void>;
   exitSession(): Promise<void>;
-  confirmYes(): Promise<void>;
-  confirmChange(): Promise<void>;
-  confirmRead(): Promise<void>;
-  confirmCancel(): Promise<void>;
   interruptExecutor(): Promise<void>;
   steer(choice: string): Promise<void>;
   consequentialChoice(choice: string): Promise<void>;
   recovery(choice: string): Promise<void>;
+  toggleContext(): Promise<void>;
+  approveContextSession(): Promise<void>;
   setAnchor(xNorm: number, yNorm: number, windowXNorm: number | null, windowYNorm: number | null, insideActiveWindow: boolean): Promise<void>;
   gazeStatus(valid: boolean): Promise<void>;
   notchVisual(sprite: SpriteState, progress: number | null, focused: boolean): Promise<void>;
@@ -53,7 +46,6 @@ export interface RendererApi {
   toggleHud(): Promise<void>;
   forceState(state: string): Promise<void>;
   simulate(action: string): Promise<void>;
-  getTelemetry(): Promise<TelemetrySummary | null>;
 }
 
 export const api: RendererApi = {
@@ -66,33 +58,24 @@ export const api: RendererApi = {
   quitApp: () => invoke(IPC.quitApp),
   summon: () => invoke(IPC.summon),
   prefetchOption: (q) => invoke(IPC.prefetchOption, q),
-  selectOption: (q) => invoke(IPC.selectOption, q),
+  selectOption: (selection) => invoke(IPC.selectOption, selection),
   more: () => invoke(IPC.more),
   back: () => invoke(IPC.back),
-  beginHint: () => invoke(IPC.beginHint),
-  updateHint: (t) => invoke(IPC.updateHint, t),
-  clearHint: () => invoke(IPC.clearHint),
-  acceptHintCandidate: (id) => invoke(IPC.acceptHintCandidate, id),
-  commitHintLiteral: (t) => invoke(IPC.commitHintLiteral, t),
-  requestCompletion: () => invoke(IPC.requestCompletion),
   exitSession: () => invoke(IPC.exitSession),
-  confirmYes: () => invoke(IPC.confirmYes),
-  confirmChange: () => invoke(IPC.confirmChange),
-  confirmRead: () => invoke(IPC.confirmRead),
-  confirmCancel: () => invoke(IPC.confirmCancel),
   interruptExecutor: () => invoke(IPC.interruptExecutor),
   steer: (c) => invoke(IPC.steer, c),
   consequentialChoice: (c) => invoke(IPC.consequentialChoice, c),
   recovery: (c) => invoke(IPC.recovery, c),
+  toggleContext: () => invoke(IPC.contextToggle),
+  approveContextSession: () => invoke(IPC.contextApproveSession),
   setAnchor: (x, y, wx, wy, inside) => invoke(IPC.gazeAnchor, { xNorm: x, yNorm: y, windowXNorm: wx, windowYNorm: wy, insideActiveWindow: inside }),
-  gazeStatus: (valid) => invoke(IPC.gazeSampleTelemetry, valid),
+  gazeStatus: (valid) => invoke(IPC.gazeSample, valid),
   notchVisual: (sprite, progress, focused) => invoke(IPC.notchVisual, { sprite, progress, focused }),
   navigationScroll: (direction, deltaPx) => invoke(IPC.navigationScroll, { direction, deltaPx }),
   getDebugInfo: () => invoke(IPC.getDebugInfo),
   toggleHud: () => invoke(IPC.toggleHud),
   forceState: (s) => invoke(IPC.forceState, s),
   simulate: (a) => invoke(IPC.simulateAction, a),
-  getTelemetry: () => invoke(IPC.getTelemetry),
 };
 
 export interface ViewState {
@@ -101,8 +84,6 @@ export interface ViewState {
   appMode: "simulated" | "live";
   interactionState: string;
   prompt: PromptViewState | null;
-  hint: PromptViewState | null;
-  confirmation: IntentConfirmationState | null;
   executing: { statusText: string; stepIndex: number; stepCount: number } | null;
   consequential: ConsequentialState | null;
   steering: SteeringState | null;
@@ -112,8 +93,9 @@ export interface ViewState {
   speech: { text: string; dataUrl?: string } | null;
   gazeStatus: string;
   notice: string | null;
-  telemetry: TelemetrySummary | null;
   context: ContextSnapshot | null;
+  interactionSnapshot: InteractionSnapshot | null;
+  task: TaskRecord | null;
 }
 
 export function initialViewState(): ViewState {
@@ -123,8 +105,6 @@ export function initialViewState(): ViewState {
     appMode: "live",
     interactionState: "BOOT",
     prompt: null,
-    hint: null,
-    confirmation: null,
     executing: null,
     consequential: null,
     steering: null,
@@ -134,28 +114,37 @@ export function initialViewState(): ViewState {
     speech: null,
     gazeStatus: "disabled",
     notice: null,
-    telemetry: null,
     context: null,
+    interactionSnapshot: null,
+    task: null,
   };
 }
 
 export function applyMessage(state: ViewState, message: ViewMessage): ViewState {
   switch (message.type) {
     case "state":
-      // Keep older confirmation messages atomic for protocol compatibility.
-      if (message.state === "INTENT_CONFIRMATION" && !state.confirmation && state.prompt) return state;
       // Direct intent execution sends its payload immediately after the state
       // transition. Keep the semantic view mounted until that payload arrives.
       if (message.state === "EXECUTING" && !state.executing && state.prompt) return state;
       return { ...state, interactionState: message.state };
     case "prompt":
-      return { ...state, prompt: message.view, hint: null, confirmation: null, executing: null, consequential: null, steering: null, recovery: null, editor: null };
-    case "hint":
-      return { ...state, prompt: message.view, confirmation: null, executing: null, consequential: null, steering: null, recovery: null, editor: null };
-    case "intent-confirmation":
-      return { ...state, interactionState: "INTENT_CONFIRMATION", confirmation: message.view, prompt: null, hint: null, consequential: null, steering: null, recovery: null, editor: null };
+      return { ...state, prompt: message.view, executing: null, consequential: null, steering: null, recovery: null, editor: null };
+    case "interaction-snapshot":
+      return {
+        ...state,
+        interactionSnapshot: message.snapshot,
+        // The snapshot is the authoritative state boundary. Null is a real
+        // value, so an old prompt, context, or task cannot survive a session
+        // exit or state transition by accident.
+        prompt: message.snapshot.prompt,
+        context: message.snapshot.context,
+        task: message.snapshot.task ?? null,
+        interactionState: message.snapshot.state,
+      };
+    case "task":
+      return { ...state, task: message.task };
     case "executing":
-      return { ...state, interactionState: "EXECUTING", executing: message.status, prompt: null, hint: null, confirmation: null, consequential: null, steering: null, recovery: null, editor: null };
+      return { ...state, interactionState: "EXECUTING", executing: message.status, prompt: null, consequential: null, steering: null, recovery: null, editor: null };
     case "consequential":
       return { ...state, consequential: message.view, executing: { statusText: "Waiting for your decision…", stepIndex: 0, stepCount: 1 } };
     case "steering":
@@ -164,8 +153,6 @@ export function applyMessage(state: ViewState, message: ViewMessage): ViewState 
       return { ...state, recovery: message.view };
     case "editor":
       return { ...state, editor: message.view };
-    case "telemetry":
-      return { ...state, telemetry: message.summary };
     case "sprite":
       return { ...state, sprite: message.sprite };
     case "speech":
