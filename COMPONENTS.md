@@ -1,72 +1,156 @@
-# View component contract
+# Hoot component contract
 
-This file identifies the runtime components that belong to View and separates them from development infrastructure and the user's applications.
+This document defines the runtime components that belong to Hoot and separates
+them from test fixtures and the user's applications.
 
-## What appears on screen
+## Visible surfaces
 
-View is an accessibility overlay, not an application launcher. The product surface contains only the perceived notch and owl, temporary gaze choices, interaction status, calibration, and explicit text entry.
+Hoot is an accessibility overlay, not an application launcher. The product
+surface contains the perceived notch and owl, temporary gaze choices,
+interaction status, context controls, confirmation/recovery panels, and
+calibration.
 
-View never renders Article, Email, Vertical Feed, Shopping, Desktop, or similar application tabs. The context engine identifies the active macOS application and window. The layout engine uses that geometry to choose screen-corner or window-halo placement without asking the user to classify the application.
+Hoot does not render Article, Email, Vertical Feed, Shopping, Desktop, or other
+fixture pages as product tabs. The context engine identifies the active macOS
+application and window. The layout engine uses window geometry to select a
+screen-corner or window-halo arrangement without asking the user to classify
+the application.
 
-The current build does not implement Apple iPhone Mirroring integration. View does not discover a phone, launch a mirroring session, or use an iOS-side API. A narrow active window still receives the same generic window-halo layout because the geometry rule is independent of the application name.
+Hoot has no Apple iPhone Mirroring integration. A narrow active window uses the
+same generic window-halo rule as any other application.
 
 ## Runtime ownership
 
 | Component | Process | Responsibility | User-visible |
 | --- | --- | --- | --- |
-| `ContextEngine` | Main | Reads the active application, window bounds, and screen context | No |
-| `InteractionController` and `StateMachine` | Main | Own the interaction state and allowed transitions | Through overlay state |
-| `PromptCompletionEngine` | Main | Produces semantic choices and clarification turns | Through semantic cards |
-| Computer-use executor | Main | Performs confirmed desktop actions | Status only |
-| TTS service | Main | Speaks prompts and confirmations | Audio |
-| WebEyeTrack provider | Renderer | Produces live camera gaze samples | Calibration only |
-| Simulated gaze provider | Renderer | Supplies deterministic pointer-position samples for tests | No product chrome |
-| Gaze smoother and dwell selector | Renderer | Stabilize gaze and commit continuous dwell selections | Progress feedback |
-| Overlay layout | Renderer | Places cards from actual active-window geometry | Yes |
-| Dasher | Renderer iframe | Provides explicit arbitrary-text entry | Only when requested |
-| Owl and perceived notch | Native helper + renderer proxy | The AppKit panel owns visible pixels; the renderer keeps the zero-opacity gaze hit proxy and CSS fallback | Always while View runs |
+| `ContextEngine` | Main | Session-scoped context policy, approved-window metadata, references, and optional window capture | Context badge |
+| `InteractionController` and `StateMachine` | Main | Interaction state, selection envelopes, task dispatch, and recovery | Overlay state |
+| `TaskStore` and `src/shared/task.ts` reducer | Main/shared | In-memory accepted task meaning, revisions, and task actions | Task-aware cards when enabled |
+| `IntentCompositionEngine` | Main | Semantic choices, clarification turns, and terminal intent | Semantic cards |
+| `IntentFrame` | Shared | Typed fields, accepted evidence, unresolved slots, and provenance | No direct UI |
+| `ContextLedger` and `TargetResolver` | Main | Bounded weak context and open-world target lookup | Context metadata |
+| `CandidateRanker` | Main | Converts decoder hypotheses into four diverse cards | Semantic cards |
+| `TaskCompiler` | Main | Converts authoritative intent into an executor task | No direct UI |
+| `DecoderProvider` | Main | Shared adapter contract for OpenRouter, direct Gemini, and fixture providers | No direct UI |
+| Computer-use executor | Main | Performs desktop actions and consequential-action checks | Execution status |
+| TTS service | Main | Speaks prompts and confirmations | Audio and sprite state |
+| WebEyeTrack provider | Renderer | Produces live camera gaze samples and calibration events | Calibration |
+| Simulated gaze provider | Renderer | Maps pointer position to gaze for demos and tests | No product chrome |
+| Gaze smoother and dwell selector | Renderer | Stabilizes gaze and commits continuous dwell selections | Progress feedback |
+| Overlay layout | Renderer | Places cards from screen and active-window geometry | Cards and shelf |
+| `StatusPanels` | Renderer | Renders context, setup, debug, confirmation, interruption, and recovery panels | State-specific panels |
+| `SpeechPlayback` | Renderer | Queues synthesized speech and short local cues | Audio |
+| Owl and perceived notch | Native helper + renderer proxy | Native panel owns visible pixels; renderer owns the zero-opacity gaze target and CSS fallback | Notch and owl |
 
-## Development fixtures
+## Test fixtures
 
-The HTML files under `src/renderer/public/fixtures/` are test documents. They are not View components and must not be mounted by the product overlay. Tests may open them independently when a controlled document is required.
-
-`SIMULATE_GAZE=true` enables pointer-position samples for automated testing. It does not select a fake application, render fixture tabs, or activate in response to a live-provider failure.
+The HTML files under `src/renderer/public/fixtures/` are controlled test
+documents. They are not Hoot components and are not mounted by the product
+overlay. `SIMULATE_GAZE=true` enables deterministic pointer-position samples;
+it does not activate after a live camera failure and does not select a fake
+application.
 
 ## Live calibration contract
 
-`WebEyeTrackProvider` owns camera activation, target presentation, independent validation, and activation errors. The patched worker owns camera-frame inference and the calibration coordinate correction. Calibration never uses pointer positions as gaze predictions. Target clicks provide known target coordinates only.
+`WebEyeTrackProvider` owns camera activation, target presentation, validation,
+profile storage, and activation errors. The worker owns camera-frame inference.
+Calibration fits a CPU-side affine correction on top of fixed neural-network
+outputs; it does not update neural weights and does not use pointer positions as
+gaze predictions.
 
-1. The worker serializes commands and accepts one distinct camera frame at a time. A reset acknowledgment separates consecutive targets.
-2. Each of five targets contributes three raw, finite predictions sampled across a fixation interval of at least 250 ms. The worker fits an affine coordinate correction (scale, offset, and cross-axis correction) using the median prediction per target. The fit runs on CPU and leaves neural weights unchanged.
-3. Four held-out targets are used only to measure accuracy. Each check excludes 300 ms of settling time, then measures 1,200 ms of predictions. These waits are calibration measurement intervals, not live inference throttles. The unchanged pass criterion is at least five valid frames and at least 70% of all frames within a normalized Euclidean distance of 0.25 from the target.
-4. Only four passing checks permit a save. TensorFlow.js stores the network and `screenCalibration` metadata in one IndexedDB model artifact (`view-webeyetrack-v3`). The renderer records camera identity/resolution and viewport dimensions/scale after the save acknowledgment. `demo:calibrate` reuses this complete profile; `demo:recalibrate` explicitly replaces it after a successful new calibration.
-5. Missing frames, an underdetermined fit, worker errors, incompatible profiles, and storage failures keep gaze disabled. Cancellation removes pending callbacks and stops only the owning camera stream. The application never switches providers automatically or substitutes pointer input after a camera failure.
+The calibration contract is:
 
-The previous batch path fitted a coordinate correction and then changed the neural network weights that supplied its inputs. That operation invalidated the fitted correction. The previous save path also omitted the correction and restored only weights. Patch `0009` replaces that path and rejects incomplete legacy profiles. The earlier trace proves successful frame collection and failed validation; it does not by itself measure which numerical defect caused each failed corner.
+1. The worker serializes commands and accepts one distinct camera frame at a
+   time. A reset acknowledgment separates consecutive targets.
+2. Five targets contribute three finite predictions each across a fixation
+   interval of at least 250 ms. The worker fits scale, offset, and cross-axis
+   correction using the median prediction for each target.
+3. Four held-out targets measure accuracy. Each check excludes 300 ms of
+   settling time and measures 1,200 ms of predictions. A check passes with at
+   least five valid frames and at least 70% of frames within normalized distance
+   `0.25`.
+4. Four passing checks permit a save. TensorFlow.js stores the network and
+   `screenCalibration` metadata in the IndexedDB artifact `view-webeyetrack-v3`.
+   The renderer stores camera identity/resolution and viewport dimensions/scale.
+   `demo:calibrate` reuses a matching profile; `demo:recalibrate` replaces it
+   after a successful run.
+5. Missing frames, an underdetermined fit, worker errors, incompatible profiles,
+   cancellation, and storage failures keep gaze disabled. Hoot does not switch
+   providers or substitute pointer input after a camera failure.
 
-Calibration logs include a session ID, stage timings, frame counts, fit error, and held-out root mean square error (RMSE) and 95th-percentile error. Error distances use normalized screen coordinates. Logs do not include camera images or individual gaze coordinates. A saved profile remains sensitive to seating, lighting, and camera placement; the application does not claim permanent accuracy after those conditions change.
+Calibration logs contain a session ID, stage timings, frame counts, fit error,
+and held-out RMSE and 95th-percentile error. They do not contain camera images
+or individual gaze coordinates. A saved profile remains sensitive to seating,
+lighting, camera placement, display scale, and viewport changes.
 
-The implementation uses TensorFlow.js model metadata and model IO, documented in the [TensorFlow.js API](https://js.tensorflow.org/api/latest/). `scripts/test-webeyetrack.cjs` tests the actual patched source and bundled model, including distorted inputs, independent targets, invalid fits, complete restore, and stream ownership. Electron tests separately exercise the calibration UI with a test-only worker dependency.
+The implementation uses TensorFlow.js model metadata and model I/O documented in
+the [TensorFlow.js API](https://js.tensorflow.org/api/latest/). The WebEyeTrack
+verification script and Electron calibration tests exercise the worker seam,
+profile storage, invalid fits, stream ownership, and UI error states.
 
 ## Overlay behavior
 
-All View-owned surfaces use the same light-neutral tokens from `src/renderer/styles.css`. The user's active application remains visible around those surfaces. View does not apply a theme to the underlying application.
+All Hoot-owned surfaces use the light-neutral tokens in
+`src/renderer/styles.css`. The active application remains visible around those
+surfaces. Hoot does not apply a theme to the underlying application.
 
-The full-screen transparent renderer is click-through during passive and simulated operation. Calibration temporarily accepts input because its targets require clicks. Setup and calibration-error surfaces provide a visible Quit View action. `CommandOrControl+Alt+Shift+V` is the independent emergency quit shortcut; it is deliberately separate from macOS Log Out.
+The transparent renderer is click-through during passive and simulated
+operation. Calibration accepts pointer input because its target dots require
+clicks. Setup and calibration-error surfaces expose `Quit View`. The emergency
+`CommandOrControl+Alt+Shift+V` shortcut remains independent from macOS Log Out
+and shutdown controls.
 
-The overlay uses a floating window level. It must never use the `screen-saver` level because that level can cover macOS shutdown, Force Quit, and other system safety surfaces.
+## Context and recording
+
+Context starts disabled during boot and passive gaze. Summoning the owl creates
+an app-scoped session. An empty `CONTEXT_ALLOWED_APPS` value approves the
+frontmost app at summon; `ALLOW SESSION` follows approved foreground changes.
+A configured app name or bundle ID allowlist pre-approves matching apps.
+
+The main process keeps one bounded `ContextSnapshot` with access state, session
+ID, revision, active-window metadata, source statuses, and references. A
+requested screenshot comes only from the approved window. A failed capture
+returns an unavailable source and does not widen to a primary-display image.
+The Accessibility source performs one bounded focused-element/value query.
+Browser DOM and selection extraction are outside the product boundary.
+
+`PAUSE` clears the in-memory screenshot and stops refreshes. Exit, stop, and
+verified completion disable the session and clear app and reference data. The
+prompt engine forwards active structured context and an optional approved image
+to providers; paused and blocked snapshots forward no app content.
+
+Computer-use screenshots use a separate display boundary. Normal live mode
+protects the Electron overlay from external capture. With
+`HOOTS_RECORDING_MODE=true`, the executor invokes
+`native/ScreenCaptureHost.swift`, and ScreenCaptureKit excludes Hoots' Electron
+and native-helper processes before returning one PNG. A missing helper,
+permission failure, or unresolved exclusion list is an explicit error. There is
+no unfiltered fallback.
 
 ## Notch and owl geometry
 
-AppKit supplies the safe-area top inset and the left and right edges of the camera gap. The perceived notch uses that exact width. It extends behind the current owl artwork and ends two pixels below the owl's visible frame.
+AppKit supplies the safe-area top inset and camera-gap edges. The native helper
+uses that geometry for the black perceived notch and extends it behind the owl
+artwork. The owl and notch share one gaze hit region. The renderer keeps a
+zero-opacity DOM proxy for gaze selection and a CSS fallback for systems where
+the helper is unavailable. The helper uses a compact top-center surface on a
+display without a camera gap.
 
-The notch and owl share one gaze hit region. On macOS, `native/NotchHost.swift` owns the visible panel and aligns its top edge with the primary display's physical top edge using AppKit safe-area geometry. The renderer keeps a zero-opacity DOM proxy so the gaze selector continues to use the same padded region. If the helper is unavailable, the renderer's CSS fallback extends 62 px below the measured top inset so its black background covers the ring and owl art with a lower overlap margin. On a display without a camera gap, the helper uses a compact top-center surface and the fallback renders no artificial notch.
+## Keyboard controls
 
-## Resolved overlay defects
+Keyboard controls support deterministic demonstrations and recovery. They are
+not the primary gaze input path.
 
-- Development fixture tabs previously appeared to be product applications.
-- Simulated gaze emitted only on mouse movement, so a stationary dwell could not finish.
-- Dwell progress used the last sample timestamp, producing stalled feedback between samples.
-- The renderer knew only the notch center and height, so it could not draw a correctly sized perceived notch.
-- The full-screen overlay used the `screen-saver` level and could intercept the desktop while covering system dialogs.
-- The idle and working sprite loops took 11 and 4.8 seconds. The current artwork is retained with faster playback and a short reaction.
+| Key | Action |
+| --- | --- |
+| `N` | Summon from `PASSIVE`; interrupt execution when active. |
+| `1`–`4` | Select quadrant A–D in semantic, confirmation, interruption, or recovery views. |
+| `B` | Go back in composition. |
+| `M` | Request more choices / record `NONE`. |
+| `X` | Exit the semantic session or navigation mode. |
+| `R` | Toggle reading mode while passive. |
+| `F` | Toggle vertical-feed mode while passive. |
+| `P` | Pause or resume the enabled context session. |
+| `A` | Approve the blocked app for the enabled context session. |
+| `Cmd/Ctrl+D` | Toggle the debug HUD. |
+| `Esc` | Cancel active calibration. |
