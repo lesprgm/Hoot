@@ -63,15 +63,6 @@ describe("InteractionStateMachine", () => {
     expect(m.state).toBe("SEMANTIC");
   });
 
-  it("restores the exact state that gaze loss paused", () => {
-    const m = new InteractionStateMachine();
-    m.set("INTENT_CONFIRMATION");
-    expect(m.transition("gazeLost")).toBe(true);
-    expect(m.state).toBe("SEMANTIC_PAUSED");
-    expect(m.transition("gazeRestored")).toBe(true);
-    expect(m.state).toBe("INTENT_CONFIRMATION");
-  });
-
   it("notch dwell during EXECUTING interrupts immediately", () => {
     const m = new InteractionStateMachine();
     m.set("EXECUTING");

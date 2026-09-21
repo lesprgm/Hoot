@@ -12,16 +12,9 @@ export type MachineTrigger =
   | "selectOption"
   | "more"
   | "clarifyAnswer"
-  | "openFallback"
-  | "hintSubmitted"
-  | "literalCommit"
   | "back"
   | "exit"
   | "intentReady"
-  | "confirmYes"
-  | "confirmChange"
-  | "confirmRead"
-  | "confirmCancel"
   | "executionStarted"
   | "consequentialPending"
   | "approveConsequential"
@@ -76,7 +69,6 @@ const TRANSITIONS: Partial<Record<InteractionState, Partial<Record<MachineTrigge
     more: "SEMANTIC",
     clarifyAnswer: "SEMANTIC",
     intentReady: "EXECUTING",
-    openFallback: "FALLBACK_TEXT",
     back: "SEMANTIC",
     exit: "PASSIVE",
     gazeLost: "SEMANTIC_PAUSED",
@@ -93,7 +85,6 @@ const TRANSITIONS: Partial<Record<InteractionState, Partial<Record<MachineTrigge
     decodingStarted: "DECODING_ALT",
     clarifyAnswer: "SEMANTIC",
     more: "CLARIFYING",
-    openFallback: "FALLBACK_TEXT",
     back: "SEMANTIC",
     exit: "PASSIVE",
     gazeLost: "SEMANTIC_PAUSED",
@@ -103,27 +94,10 @@ const TRANSITIONS: Partial<Record<InteractionState, Partial<Record<MachineTrigge
     gazeRestored: "SEMANTIC",
     exit: "PASSIVE",
   },
-  FALLBACK_TEXT: {
-    hintSubmitted: "SEMANTIC",
-    literalCommit: "EXECUTING",
-    exit: "PASSIVE",
-    back: "SEMANTIC",
-    gazeLost: "SEMANTIC_PAUSED",
-  },
-  INTENT_CONFIRMATION: {
-    confirmYes: "EXECUTING",
-    confirmChange: "SEMANTIC",
-    confirmRead: "INTENT_CONFIRMATION",
-    confirmCancel: "PASSIVE",
-    exit: "PASSIVE",
-    gazeLost: "SEMANTIC_PAUSED",
-    error: "ERROR_RECOVERY",
-  },
   EXECUTING: {
     consequentialPending: "CONSEQUENTIAL_CONFIRMATION",
     interrupt: "EXECUTION_INTERRUPTED",
     completed: "COMPLETE",
-    confirmCancel: "PASSIVE",
     error: "ERROR_RECOVERY",
   },
   EXECUTION_INTERRUPTED: {
