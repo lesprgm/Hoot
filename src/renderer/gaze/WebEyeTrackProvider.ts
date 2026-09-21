@@ -1,8 +1,7 @@
-import type { CalibrationSample } from "@realeye-io/webcam-eyetracker-light-open";
 import type { GazeSample } from "../../shared/types";
 import type { GazeProvider } from "./GazeProvider";
 import { calibrationOperation } from "./CalibrationOperation";
-import { currentCalibrationViewport, sameCalibrationViewport, passesCalibrationTarget, assessCalibrationTarget, type CalibrationViewport } from "./calibration";
+import { currentCalibrationViewport, sameCalibrationViewport, assessCalibrationTarget, type CalibrationViewport } from "./calibration";
 
 type WebEyeTrackResult = {
   normPog: [number, number];
@@ -43,14 +42,6 @@ type PatchedWebEyeTrackModule = {
       maxPoints: number;
     },
   ) => PatchedWebEyeTrackProxy;
-};
-
-type RealEyeTracker = {
-  initialize(): Promise<void>;
-  calibrate(samples: CalibrationSample[]): void;
-  detectFace(image: ImageData): { confidence?: number } | null;
-  predictWithDetection(image: ImageData, detection: object): { x: number; y: number };
-  dispose(): void;
 };
 
 const WEBEYE_CALIBRATION_POINTS: Array<[number, number]> = [
@@ -208,20 +199,6 @@ function calibrationSession(controller: AbortController) {
   };
 }
 
-function captureVideoFrame(video: HTMLVideoElement, canvas: HTMLCanvasElement): ImageData | null {
-  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth === 0 || video.videoHeight === 0) return null;
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) return null;
-  try {
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return context.getImageData(0, 0, canvas.width, canvas.height);
-  } catch {
-    return null;
-  }
-}
-
 export class WebEyeTrackProvider implements GazeProvider {
   readonly name = "webeyetrack-patched-otree-et";
   private calibrationAbort = new AbortController();
@@ -235,7 +212,6 @@ export class WebEyeTrackProvider implements GazeProvider {
   private proxy: PatchedWebEyeTrackProxy | null = null;
   private consumer: ((sample: GazeSample) => void) | null = null;
   private ready: Promise<void> | null = null;
-  private latestSample: GazeSample | null = null;
   private recentSamples: GazeSample[] = [];
   private lastFrameTimestamp: number | null = null;
   private resolveFirstResult: (() => void) | null = null;
@@ -324,7 +300,6 @@ export class WebEyeTrackProvider implements GazeProvider {
       valid,
       quality: valid ? 1 : 0,
     };
-    this.latestSample = sample;
     this.recentSamples.push(sample);
     const cutoff = sample.timestampMs - 3_000;
     while (this.recentSamples[0]?.timestampMs < cutoff) this.recentSamples.shift();
@@ -470,7 +445,6 @@ export class WebEyeTrackProvider implements GazeProvider {
       }
       this.calibrated = accepted;
       this.calibrationVerified = verified;
-      this.latestSample = null;
       this.recentSamples = [];
       const positions = ["top-left", "top-right", "bottom-left", "bottom-right"];
       const failed = failedTargets.map(index => positions[index]).join(", ");
@@ -503,150 +477,11 @@ export class WebEyeTrackProvider implements GazeProvider {
     this.webcam = null;
     this.ready = null;
     this.resolveFirstResult = null;
-    this.latestSample = null;
     this.recentSamples = [];
     this.lastFrameTimestamp = null;
   }
 
   async dispose(): Promise<void> {
     await this.stop();
-  }
-}
-
-export class RealEyeProvider implements GazeProvider {
-  readonly name = "realeye";
-  private calibrationAbort = new AbortController();
-  private calibrated = false;
-  private tracker: RealEyeTracker | null = null;
-  private stream: MediaStream | null = null;
-  private video: HTMLVideoElement | null = null;
-  private frameCanvas = document.createElement("canvas");
-  private animationFrame: number | null = null;
-  private lastVideoTime = -1;
-  private predicting = false;
-
-  async initialize(): Promise<void> {
-    this.calibrationAbort = new AbortController();
-    this.calibrated = false;
-    const { WebcamETLight } = await import("@realeye-io/webcam-eyetracker-light-open");
-    this.video = cameraVideo();
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
-      audio: false,
-    });
-    this.video.srcObject = this.stream;
-    await this.video.play();
-    await waitForVideoReady(this.video);
-    this.tracker = new WebcamETLight({
-      delegate: "CPU",
-      runningMode: "VIDEO",
-      faceDetectorMode: "landmarker",
-      modelPath: publicAsset("./mediapipe/face_landmarker.task"),
-      wasmPath: publicAsset("./realeye/wasm"),
-    }) as RealEyeTracker;
-    await this.tracker.initialize();
-  }
-
-  async calibrate(): Promise<{ ok: boolean; message: string }> {
-    if (!this.tracker || !this.video) return { ok: false, message: "RealEye did not initialize." };
-    const { getCalibrationPoints, getRecommendedPattern } = await import("@realeye-io/webcam-eyetracker-light-open");
-    const points = getCalibrationPoints(getRecommendedPattern()).map((point) => [point.x, point.y] as [number, number]);
-    const samples: CalibrationSample[] = [];
-    const session = calibrationSession(this.calibrationAbort);
-    const { instruction, target } = session;
-    try {
-      for (let index = 0; index < points.length; index++) {
-        const point = points[index];
-        positionTarget(target, point);
-        let accepted = false;
-        for (let attempt = 0; attempt < 3 && !accepted; attempt++) {
-          instruction.textContent = `${attempt ? "No face was captured. Try again. " : ""}Look at dot ${index + 1} of ${points.length}, then click it. ${session.description} · Esc to cancel`;
-          await session.waitForClick();
-          const videoTime = this.video.currentTime;
-          const started = performance.now();
-          while (this.video.currentTime === videoTime && performance.now() - started < 1500) {
-            await delay(33);
-            session.checkViewport();
-          }
-          const image = this.video.currentTime !== videoTime ? captureVideoFrame(this.video, this.frameCanvas) : null;
-          if (image && this.tracker.detectFace(image)) {
-            samples.push({ image, gazeX: point[0] * window.innerWidth, gazeY: point[1] * window.innerHeight });
-            accepted = true;
-          }
-        }
-        if (!accepted) throw new Error(`No face at calibration target ${index + 1} after three attempts.`);
-      }
-      session.checkViewport();
-      this.tracker.calibrate(samples);
-      for (let index = 0; index < VERIFICATION_POINTS.length; index++) {
-        const point = VERIFICATION_POINTS[index];
-        positionTarget(target, point);
-        instruction.textContent = `Accuracy check ${index + 1} of 4: look at the dot, then click and keep looking.`;
-        await session.waitForClick();
-        const started = performance.now();
-        const verification: GazeSample[] = [];
-        while (performance.now() - started < 700) {
-          const sample = this.predictSample();
-          if (sample) verification.push(sample);
-          await delay(33);
-        }
-        if (!passesCalibrationTarget(verification, point)) throw new Error(`The ${point[0] < 0.5 ? "left" : "right"} accuracy check failed. Gaze remains disabled.`);
-      }
-      session.checkViewport();
-      this.calibrated = true;
-      return { ok: true, message: `RealEye ${points.length}-point calibration and four accuracy checks passed.` };
-    } catch (error) {
-      return { ok: false, message: `RealEye calibration failed: ${(error as Error).message}` };
-    } finally {
-      session.close();
-    }
-  }
-
-  async start(onSample: (sample: GazeSample) => void): Promise<void> {
-    if (!this.tracker || !this.video || !this.calibrated) throw new Error("Complete RealEye calibration and verification before starting gaze.");
-    const tick = (): void => {
-      this.animationFrame = requestAnimationFrame(tick);
-      if (this.predicting) return;
-      this.predicting = true;
-      try {
-        const sample = this.predictSample();
-        if (sample) onSample(sample);
-      } catch {
-        onSample({ xNorm: 0, yNorm: 0, timestampMs: performance.now(), valid: false, quality: 0 });
-      } finally {
-        this.predicting = false;
-      }
-    };
-    this.animationFrame = requestAnimationFrame(tick);
-  }
-
-  private predictSample(): GazeSample | null {
-    if (!this.video || !this.tracker || this.video.currentTime === this.lastVideoTime) return null;
-    this.lastVideoTime = this.video.currentTime;
-    const invalid: GazeSample = { xNorm: 0, yNorm: 0, timestampMs: performance.now(), valid: false, quality: 0 };
-    const image = captureVideoFrame(this.video, this.frameCanvas);
-    if (!image) return invalid;
-    const detection = this.tracker.detectFace(image);
-    if (!detection) return invalid;
-    const point = this.tracker.predictWithDetection(image, detection);
-    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return invalid;
-    return { xNorm: clamp01(point.x / window.innerWidth), yNorm: clamp01(point.y / window.innerHeight), timestampMs: performance.now(), valid: true, quality: clamp01(detection.confidence ?? 1) };
-  }
-
-  async stop(): Promise<void> {
-    this.calibrationAbort.abort();
-    this.calibrated = false;
-    if (this.animationFrame !== null) cancelAnimationFrame(this.animationFrame);
-    this.animationFrame = null;
-    this.stream?.getTracks().forEach((track) => track.stop());
-    this.stream = null;
-    if (this.video) { this.video.pause(); this.video.srcObject = null; }
-    this.lastVideoTime = -1;
-  }
-
-  async dispose(): Promise<void> {
-    await this.stop();
-    this.tracker?.dispose();
-    this.tracker = null;
   }
 }

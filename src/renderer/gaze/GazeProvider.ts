@@ -10,15 +10,3 @@ export interface GazeProvider {
   isCalibrationRestored?(): boolean;
   isCalibrationVerified?(): boolean;
 }
-
-export class UnavailableGazeProvider implements GazeProvider {
-  readonly name = "unavailable";
-  reason = "provider could not be loaded";
-  async initialize(): Promise<void> {}
-  async calibrate() {
-    return { ok: false, message: this.reason };
-  }
-  async start(): Promise<void> {}
-  async stop(): Promise<void> {}
-  async dispose(): Promise<void> {}
-}

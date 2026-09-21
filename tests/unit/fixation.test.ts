@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { DwellSelector, GazeSmoother, type HitRegion } from "../../src/renderer/gaze/fixation";
 
 const region = (id: string, dwellMs: number): HitRegion => ({
