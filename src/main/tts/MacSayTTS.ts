@@ -127,7 +127,6 @@ export class MuteTTS implements TTSProvider {
 
 export class TTSService {
   private provider: TTSProvider;
-  private prefetch = new Map<string, Promise<TTSResult | null>>();
   private cancelGeneration = 0;
   private speechQueue: Promise<void> = Promise.resolve();
   onAudio: ((result: TTSResult) => void) | null = null;
@@ -153,7 +152,7 @@ export class TTSService {
     const speakOne = async (): Promise<void> => {
       if (generation !== this.cancelGeneration) return;
       try {
-        const result = await this.synthesize(text);
+        const result = await this.provider.synthesize(text);
         if (generation !== this.cancelGeneration) return;
         if (result) this.play(result);
         else if (this.provider.name !== "mute") this.onError?.(`${this.provider.name} returned no audio.`);
@@ -170,30 +169,6 @@ export class TTSService {
     return scheduled;
   }
 
-  private async synthesize(text: string): Promise<TTSResult | null> {
-    const existing = this.prefetch.get(text);
-    if (existing) {
-      this.prefetch.delete(text);
-      return existing;
-    }
-    const promise = this.provider.synthesize(text);
-    this.prefetch.set(text, promise);
-    try {
-      return await promise;
-    } finally {
-      if (this.prefetch.get(text) === promise) this.prefetch.delete(text);
-    }
-  }
-
-  prefetchText(text: string): void {
-    if (!text.trim() || this.prefetch.has(text)) return;
-    this.prefetch.set(text, this.provider.synthesize(text).catch(() => null));
-    if (this.prefetch.size > 24) {
-      const first = this.prefetch.keys().next().value as string;
-      this.prefetch.delete(first);
-    }
-  }
-
   play(result: TTSResult): void {
     if (this.onAudio) this.onAudio(result);
   }
@@ -201,7 +176,6 @@ export class TTSService {
   stop(): void {
     this.cancelGeneration += 1;
     this.speechQueue = Promise.resolve();
-    this.prefetch.clear();
     this.provider.stop();
   }
 }
