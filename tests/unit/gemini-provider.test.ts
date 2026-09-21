@@ -13,14 +13,13 @@ import {
   CLARIFICATION_SYSTEM_PROMPT,
   DECODER_SYSTEM_PROMPT,
 } from "../../src/main/prompt-completion/decoderPrompt";
-import { DEFAULT_LEXICON } from "../../src/main/prompt-completion/PromptCompletionEngine";
+import { DEFAULT_LEXICON } from "../../src/main/prompt-completion/IntentCompositionEngine";
 import type { DecoderInput } from "../../src/shared/types";
 
 function inputWithImage(capturedImageDataUrl: string | null = null): DecoderInput {
   return {
     displayPrompt: "I want you to…",
     explicitSemanticEvidence: [],
-    hints: [],
     rejectedSets: [],
     historyDepth: 0,
     userLexicon: DEFAULT_LEXICON,

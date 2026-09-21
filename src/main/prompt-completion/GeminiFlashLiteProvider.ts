@@ -6,8 +6,9 @@ import {
   DECODER_SYSTEM_PROMPT,
 } from "./decoderPrompt";
 import { validateClarification, validateDecoderResponse } from "./decoderSchema";
-import type { Clarification, DecoderProvider } from "./CandidateGenerator";
+import type { Clarification, DecoderProvider } from "./DecoderProvider";
 import type { DecoderInput, DecoderResponse } from "../../shared/types";
+import type { DecoderRequestOptions } from "./DecoderRequestCoordinator";
 
 /** Gemini structured output currently rejects minItems/maxItems; Zod remains the enforcement point. */
 export const GEMINI_DECODER_RESPONSE_SCHEMA = stripArrayBounds(DECODER_RESPONSE_JSON_SCHEMA);
@@ -27,6 +28,7 @@ export interface GeminiCreateParams {
     thinking_level?: "minimal" | "low" | "medium" | "high";
     max_output_tokens?: number;
   };
+  signal?: AbortSignal;
 }
 
 export interface GeminiInteraction {
@@ -45,7 +47,7 @@ export interface GeminiInteractionClient {
 }
 
 export interface GeminiFlashLiteProviderOptions {
-  /** Override the environment key in tests or an embedding application. */
+  /** Override the environment key in tests or a host application. */
   key?: string;
   /** Inject a fake Interactions client for deterministic tests. */
   client?: GeminiInteractionClient;
@@ -78,12 +80,13 @@ export class GeminiFlashLiteProvider implements DecoderProvider {
     await this.getClient();
   }
 
-  async generateCandidates(input: DecoderInput): Promise<DecoderResponse> {
+  async generateCandidates(input: DecoderInput, options?: DecoderRequestOptions): Promise<DecoderResponse> {
     try {
       const parsed = await this.requestJson(
         DECODER_SYSTEM_PROMPT,
         this.buildApiInput(input),
         GEMINI_DECODER_RESPONSE_SCHEMA,
+        options,
       );
       const validated = validateDecoderResponse(parsed);
       if (!validated.ok) {
@@ -95,12 +98,13 @@ export class GeminiFlashLiteProvider implements DecoderProvider {
     }
   }
 
-  async generateClarification(input: DecoderInput): Promise<Clarification> {
+  async generateClarification(input: DecoderInput, options?: DecoderRequestOptions): Promise<Clarification> {
     try {
       const parsed = await this.requestJson(
         CLARIFICATION_SYSTEM_PROMPT,
         this.buildApiInput(input),
         GEMINI_CLARIFICATION_RESPONSE_SCHEMA,
+        options,
       );
       const validated = validateClarification(parsed);
       if (!validated.ok) {
@@ -118,7 +122,6 @@ export class GeminiFlashLiteProvider implements DecoderProvider {
       currentPrompt: {
         displayPrompt: input.displayPrompt,
         explicitSemanticEvidence: input.explicitSemanticEvidence,
-        hints: input.hints,
         rejectedSets: input.rejectedSets,
         historyDepth: input.historyDepth,
         userLexicon: input.userLexicon,
@@ -126,6 +129,8 @@ export class GeminiFlashLiteProvider implements DecoderProvider {
         consecutiveNoneCount: input.consecutiveNoneCount,
         clarificationAnswers: input.clarificationAnswers,
         turn: input.turn,
+        task: input.task ?? null,
+        intentFrame: input.intentFrame ?? null,
       },
     };
   }
@@ -158,6 +163,7 @@ export class GeminiFlashLiteProvider implements DecoderProvider {
     instructions: string,
     input: GeminiContent[],
     schema: unknown,
+    options?: DecoderRequestOptions,
   ): Promise<unknown> {
     const client = await this.getClient();
     const interaction = await client.interactions.create({
@@ -180,6 +186,7 @@ export class GeminiFlashLiteProvider implements DecoderProvider {
         mime_type: "application/json",
         schema,
       },
+      signal: options?.signal,
     });
     if (interaction.status && interaction.status !== "completed") {
       const suffix = interaction.errors?.length ? `: ${JSON.stringify(interaction.errors).slice(0, 240)}` : "";
