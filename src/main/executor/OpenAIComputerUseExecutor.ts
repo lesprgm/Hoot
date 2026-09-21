@@ -1,10 +1,20 @@
 import type OpenAI from "openai";
-import type { ComputerAction, ResponseComputerToolCall, ResponseInput } from "openai/resources/responses/responses";
+import type { ComputerAction, Response, ResponseComputerToolCall, ResponseInput } from "openai/resources/responses/responses";
 import type { ExecutedTask } from "../../shared/types";
 import type { ExecutorCallbacks, ExecutorProvider } from "./ExecutorProvider";
 import { isConsequentialIntent, labelConsequentialAction } from "./ExecutorProvider";
 import { apiKey } from "../config";
 import { ScreenCapturer } from "../context/capture";
+import { AstraSession } from "./AstraSession";
+
+export interface OpenAIComputerUseExecutorOptions {
+  /** Expose the overlay to the user's recorder and filter it from Astra input. */
+  recordingMode?: boolean;
+  /** Absolute path to the native ScreenCaptureKit helper. */
+  filteredCaptureHost?: string | null;
+  /** Process IDs owned by Hoots that must be excluded from Astra screenshots. */
+  excludedProcessIds?: () => readonly number[];
+}
 
 export class OpenAIComputerUseExecutor implements ExecutorProvider {
   readonly name = "openai-computer-use";
@@ -14,9 +24,21 @@ export class OpenAIComputerUseExecutor implements ExecutorProvider {
   private running = false;
   private interruptFlag = false;
   private capturer = new ScreenCapturer();
+  private session: AstraSession | null = null;
+  private readonly recordingMode: boolean;
+  private readonly filteredCaptureHost: string | null;
+  private readonly excludedProcessIds: () => readonly number[];
 
-  constructor(private model: string, private displayWidth: number, private displayHeight: number) {
+  constructor(
+    private model: string,
+    private displayWidth: number,
+    private displayHeight: number,
+    options: OpenAIComputerUseExecutorOptions = {},
+  ) {
     this.key = apiKey("OPENAI_API_KEY");
+    this.recordingMode = options.recordingMode === true;
+    this.filteredCaptureHost = options.filteredCaptureHost ?? null;
+    this.excludedProcessIds = options.excludedProcessIds ?? (() => []);
   }
 
   get available(): boolean {
@@ -28,7 +50,7 @@ export class OpenAIComputerUseExecutor implements ExecutorProvider {
     const initialScreenshot = await this.capture();
     this.running = true;
     this.interruptFlag = false;
-    callbacks.onEvent({ type: "task_started", taskId: task.taskId, text: "Starting computer use…" });
+    this.session = new AstraSession(task.taskId);
 
     const instructions = [
       "Operate the current macOS desktop to complete the confirmed request.",
@@ -50,15 +72,17 @@ export class OpenAIComputerUseExecutor implements ExecutorProvider {
     let localConsequentialApproval = !isConsequentialIntent(task.naturalLanguagePrompt);
 
     try {
+      callbacks.onEvent({ type: "task_started", taskId: task.taskId, text: "Starting computer use…" });
       for (let turn = 0; turn < 80 && this.running; turn++) {
-        const response = await client.responses.create({
+        const request = {
           model: this.model,
           instructions,
           tools: [{ type: "computer" }],
           input: nextInput,
           previous_response_id: previousResponseId,
           reasoning: { effort: "low" },
-        });
+        };
+        const response = await client.responses.create(request as Parameters<typeof client.responses.create>[0]) as unknown as Response;
         previousResponseId = response.id;
         if (!(await this.handleInterrupt(task, callbacks, "Paused before the next desktop action."))) return;
 
@@ -84,7 +108,6 @@ export class OpenAIComputerUseExecutor implements ExecutorProvider {
             throw new Error(`OpenAI Computer Use failed: ${completion.summary}`);
           }
           callbacks.onEvent({ type: "completed", taskId: task.taskId, text: completion.summary });
-          callbacks.onComplete(task, completion.summary);
           return;
         }
 
@@ -117,8 +140,22 @@ export class OpenAIComputerUseExecutor implements ExecutorProvider {
 
           for (const action of actions) {
             if (!(await this.handleInterrupt(task, callbacks, `Paused before: ${actionLabel(action.type)}`))) return;
+            let ledgerEntry = this.session?.beginAction(action.type) ?? null;
+            if (!ledgerEntry) {
+              if (!(await this.handleInterrupt(task, callbacks, `Paused before: ${actionLabel(action.type)}`))) return;
+              ledgerEntry = this.session?.beginAction(action.type) ?? null;
+              if (!ledgerEntry) return;
+            }
             logComputerAction(action);
-            await this.performLocal(action);
+            try {
+              await this.performLocal(action);
+              this.session?.completeAction(ledgerEntry);
+            } catch (error) {
+              // A native action can be interrupted after dispatch. Mark its
+              // effect uncertain and force observation instead of replaying it.
+              this.session?.markUncertain(ledgerEntry);
+              throw error;
+            }
             callbacks.onEvent({ type: "step", taskId: task.taskId, text: actionLabel(action.type), stepIndex: turn + 1, stepCount: 80 });
           }
           const screenshotOutput = {
@@ -138,6 +175,7 @@ export class OpenAIComputerUseExecutor implements ExecutorProvider {
       if (this.running) throw new Error("Computer use exceeded the 80-turn safety limit");
     } finally {
       this.running = false;
+      this.session?.close();
     }
   }
 
@@ -165,22 +203,32 @@ export class OpenAIComputerUseExecutor implements ExecutorProvider {
   }
 
   private async capture(): Promise<string> {
+    if (this.recordingMode) {
+      const frame = await this.capturer.capturePrimaryFiltered(
+        undefined,
+        this.filteredCaptureHost,
+        this.excludedProcessIds(),
+      );
+      return frame.dataUrl;
+    }
     const frame = await this.capturer.capturePrimary();
     if (!frame) throw new Error("Screen capture failed. Grant Screen Recording permission and retry.");
     return frame.dataUrl;
   }
 
   private async handleInterrupt(task: ExecutedTask, callbacks: ExecutorCallbacks, status: string): Promise<boolean> {
-    if (!this.interruptFlag && this.running) return true;
+    if (!this.interruptFlag && this.running && this.session?.canDispatch() !== false) return true;
     callbacks.onEvent({ type: "interrupted", taskId: task.taskId, text: status });
     const choice = await callbacks.requestSteering(task, status);
     if (choice === "continue") {
       this.interruptFlag = false;
       this.running = true;
+      this.session?.resume();
       callbacks.onEvent({ type: "status", taskId: task.taskId, text: "Continuing from the paused action…" });
       return true;
     }
     this.running = false;
+    this.session?.close();
     callbacks.onEvent({ type: "stopped", taskId: task.taskId, text: choice === "change" ? "Task stopped so the instruction can be changed." : "Task stopped." });
     return false;
   }
@@ -252,11 +300,13 @@ export class OpenAIComputerUseExecutor implements ExecutorProvider {
 
   async interrupt(): Promise<void> {
     this.interruptFlag = true;
+    this.session?.requestPause();
   }
 
   async stop(): Promise<void> {
     this.interruptFlag = true;
     this.running = false;
+    this.session?.close();
   }
 }
 

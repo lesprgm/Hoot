@@ -1,5 +1,4 @@
-import type { ConsequentialState, ExecutedTask, ExecutorEvent, SteeringState } from "../../shared/types";
-import type { IntentConfirmationState } from "../../shared/types";
+import type { ConsequentialState, ExecutedTask, ExecutorEvent } from "../../shared/types";
 
 export type ExecutorAction =
   | { type: "click"; x: number; y: number }
@@ -19,7 +18,6 @@ export interface ExecutorCallbacks {
   requestConsequentialConfirmation(state: ConsequentialState): Promise<boolean>;
   requestConsequentialChoice?(state: ConsequentialState): Promise<"approve" | "change" | "cancel">;
   requestSteering(task: ExecutedTask, statusText: string): Promise<"continue" | "stop" | "change">;
-  onComplete(task: ExecutedTask, summary: string): void;
 }
 
 export interface ExecutorProvider {

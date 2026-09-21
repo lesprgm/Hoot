@@ -35,9 +35,32 @@ describe("OpenAI Computer Use availability", () => {
         onEvent: () => {},
         requestConsequentialConfirmation: async () => false,
         requestSteering: async () => "stop",
-        onComplete: () => {},
       },
     )).rejects.toThrow("OpenAI executor requires OPENAI_API_KEY");
+  });
+
+  it("fails closed when recording mode has no filtered capture helper", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+    const executor = new OpenAIComputerUseExecutor("gpt-6-astra", 1470, 956, {
+      recordingMode: true,
+      filteredCaptureHost: null,
+      excludedProcessIds: () => [1234],
+    });
+    const capture = (executor as unknown as { capture(): Promise<string> }).capture.bind(executor);
+
+    await expect(capture()).rejects.toThrow("Filtered screen capture helper is unavailable");
+  });
+
+  it("fails closed when recording mode has no Hoots process IDs to exclude", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+    const executor = new OpenAIComputerUseExecutor("gpt-6-astra", 1470, 956, {
+      recordingMode: true,
+      filteredCaptureHost: "/tmp/ViewScreenCaptureHost",
+      excludedProcessIds: () => [],
+    });
+    const capture = (executor as unknown as { capture(): Promise<string> }).capture.bind(executor);
+
+    await expect(capture()).rejects.toThrow("has no Hoots process IDs to exclude");
   });
 
   it("releases a shortcut in the same natural order used to press it", async () => {
