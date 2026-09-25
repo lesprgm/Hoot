@@ -1,8 +1,6 @@
 # Hoots: use a Mac with your eyes
 
-Hoots is an experimental Mac app for using eye movements to choose tasks and control a computer. It shows four large choices at a time. You build a request by looking at a choice and holding your gaze until Hoots selects it. If you let Hoots read the open app, it can use that information to suggest what to do next. When the request is ready, you select **Run this**; Hoots uses OpenAI Computer Use to carry out the task.
-
-Hoots is an early accessibility prototype, not a clinical device. Gaze accuracy and computer actions need supervised testing.
+Hoots turns eye gaze into a way to compose requests and operate Mac apps. It presents four choices at a time; looking at a choice selects it and updates the next set. When app context is enabled, Hoots uses information from the approved active app to make those choices relevant. After you select **Run this**, Hoots sends the task and current screenshot to OpenAI Computer Use, then carries out the returned computer actions on the Mac.
 
 ## What Hoots does
 
@@ -13,6 +11,17 @@ Hoots is an early accessibility prototype, not a clinical device. Gaze accuracy 
 - Asks for approval before sensitive actions, such as sending a message or making a purchase.
 
 Camera gaze is the normal way to select cards. Mouse input is available for testing. Hoots does not include speech recognition.
+
+## Owl state guide
+
+The owl uses two eight-frame animations. Hoots selects an animation from the current interaction state and adds gaze-progress or status cues where needed; it does not use separate artwork for every state.
+
+| Animation | Preview | Runtime states |
+| --- | --- | --- |
+| Idle | ![Idle owl animation](docs/assets/readme/owl-idle.gif) | `idle`, `dwelling`, `needs_confirmation`, `success`, `interrupted` |
+| Working | ![Working owl animation](docs/assets/readme/owl-working.gif) | `thinking`, `speaking`, `computer_use_running` |
+
+While the owl is `dwelling`, the gaze-progress ring fills as you look at it. A red glow on `needs_confirmation` marks an action that needs approval; green on `success` marks task completion; orange on `interrupted` marks an interruption. The previews shorten the animation timing so the movement is visible quickly; runtime timing and state mapping are defined in [the overlay styles](./src/renderer/styles.css) and [the native notch host](./native/NotchHost.swift).
 
 ## Architecture at a glance
 
