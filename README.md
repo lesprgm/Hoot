@@ -1,6 +1,6 @@
 # Hoots: use a Mac with your eyes
 
-Hoot lets people control a Mac using ordinary webcam gaze, including users who may not be able to reliably use a mouse or keyboard. Webcam gaze is too noisy for precise cursor control, so Hoot uses four large semantic choices to progressively determine what the user wants to do. Once the intent is clear, a computer-use agent performs the precise mouse and keyboard actions across ordinary Mac applications.
+Hoot lets people control a Mac using ordinary webcam gaze, including people with severe motor impairments or paralysis who may not be able to reliably use a mouse or keyboard. Webcam gaze is too noisy for precise cursor control, so Hoot uses four large semantic choices to progressively determine what the user wants to do. Once the intent is clear, a computer-use agent performs the precise mouse and keyboard actions across ordinary Mac applications.
 
 ## What Hoots does
 
