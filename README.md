@@ -1,6 +1,6 @@
 # Hoots: use a Mac with your eyes
 
-Hoots turns eye gaze into a way to compose requests and operate Mac apps. It presents four choices at a time; looking at a choice selects it and updates the next set. When app context is enabled, Hoots uses information from the approved active app to make those choices relevant. After you select **Run this**, Hoots sends the task and current screenshot to OpenAI Computer Use, then carries out the returned computer actions on the Mac.
+Hoot lets people control a Mac using ordinary webcam gaze, including users who may not be able to reliably use a mouse or keyboard. Webcam gaze is too noisy for precise cursor control, so Hoot uses four large semantic choices to progressively determine what the user wants to do. Once the intent is clear, a computer-use agent performs the precise mouse and keyboard actions across ordinary Mac applications.
 
 ## What Hoots does
 
